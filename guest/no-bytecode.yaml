@@ -1,0 +1,3 @@
+# Cisco skill-scanner policy override (merged over defaults): don't marshal.load target .pyc files.
+analyzers:
+  bytecode: false

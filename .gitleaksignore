@@ -1,0 +1,6 @@
+# Deliberate fake credentials planted in the audit VM as decoys (every value contains AUDITDECOY)
+guest/dynamic.sh:aws-access-token:30
+vm/provision.sh:private-key:173
+vm/provision.sh:aws-access-token:176
+vm/provision.sh:generic-api-key:182
+vm/provision.sh:stripe-access-token:186

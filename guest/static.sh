@@ -29,7 +29,9 @@ log "semgrep exit $?"
 # Skill/plugin scanners: run on each folder that holds a skill or plugin (they only look at the scan root)
 mapfile -t roots < <( { find "$SRC" -name SKILL.md -printf '%h\n'; find "$SRC" -type d -name .claude-plugin -printf '%h\n';
                         find "$SRC" -maxdepth 3 \( -name .mcp.json -o -path '*/.claude/settings*.json' \) -printf '%h\n' | sed 's#/\.claude$##'; } \
-                      | sort -u | head -40 )
+                      | sort -u > /tmp/skill-roots.txt; head -"${AUDIT_MAX_ROOTS:-150}" /tmp/skill-roots.txt )
+n_all=$(wc -l < /tmp/skill-roots.txt)
+[ "$n_all" -gt "${AUDIT_MAX_ROOTS:-150}" ] && log "WARNING: $n_all skill/plugin roots, only the first ${AUDIT_MAX_ROOTS:-150} get SkillSpector/Cisco (our checks cover all files)"
 if [ ${#roots[@]} -gt 0 ]; then
   [[ " ${roots[*]} " == *" $SRC "* ]] || roots=("$SRC" "${roots[@]}")
   i=0

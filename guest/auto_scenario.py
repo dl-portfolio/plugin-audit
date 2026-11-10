@@ -5,7 +5,7 @@ The scripts run later as 'sandbox' in the repo root (see dynamic.sh). /audit can
 
 python3 -I auto_scenario.py <src-dir> <out-dir>
 """
-import glob, json, os, shlex, sys, tomllib
+import glob, json, os, re, shlex, sys, tomllib
 
 src, out = sys.argv[1], sys.argv[2]
 q = shlex.quote
@@ -147,8 +147,65 @@ for hf in sorted(set(hook_files)):
     run.append(f'# Claude hooks from {rel(hf)}')
     run.append(f'CLAUDE_PLUGIN_ROOT="$PWD/{rel(root)}" CLAUDE_PROJECT_DIR="$PWD" python3 -I /opt/audit/bin/fire_hooks.py {q(rel(hf))} "$PWD" || true')
 
-# ---------- what is left for a human / Claude ----------
+# ---------- Claude skills: bundled scripts ----------
+# Scripts next to a SKILL.md (or under its scripts/) are what the agent runs when the skill is used. Each gets
+# --help; when its source plainly takes one file argument and names a file type we have a sample of, it also
+# runs on that sample. Short timeouts and a cap keep the run phase inside its time budget.
 skills = glob.glob(f'{src}/**/SKILL.md', recursive=True)
+RUNNERS = {'.py': '"$PY"', '.sh': 'bash', '.js': 'node', '.cjs': 'node', '.mjs': 'node'}
+SAMPLES = {  # small harmless inputs, written to ~/audit-samples by run.sh
+    'json': '{"name": "sample", "items": [1, 2, 3]}',
+    'csv': 'name,value\\nalpha,1\\nbeta,2',
+    'md': '# Sample\\n\\nA short markdown file with a [link](https://example.com).',
+    'txt': 'Plain sample text for testing.',
+    'html': '<!doctype html><title>Sample</title><p>Hello</p>',
+    'yaml': 'name: sample\\nitems: [1, 2, 3]',
+    'xml': '<?xml version="1.0"?><root><item>1</item></root>',
+}
+FILE_ARG = re.compile(r'add_argument\(\s*[\'"][A-Za-z_]|sys\.argv\[1\]|@click\.argument|typer\.Argument'
+                      r'|process\.argv\[2\]|process\.argv\.slice\(2\)|\$\{?1\b')
+MAX_SCRIPTS = 30
+scripts = {}
+for d in sorted({os.path.dirname(p) for p in skills}):
+    for p in sorted(glob.glob(f'{d}/*') + glob.glob(f'{d}/scripts/**/*', recursive=True)):
+        if os.path.splitext(p)[1] in RUNNERS and os.path.isfile(p) and not os.path.islink(p):
+            scripts.setdefault(p, d)
+if scripts:
+    # dependencies a skill declares next to its scripts
+    for d in sorted(set(scripts.values())):
+        for sub in ('', 'scripts'):
+            dd = os.path.join(d, sub).rstrip('/')
+            if dd == src:
+                continue
+            if os.path.isfile(os.path.join(dd, 'requirements.txt')):
+                inst += ['[ -x .audit-skills-venv/bin/python ] || uv venv .audit-skills-venv',
+                         f'uv pip install --python .audit-skills-venv/bin/python -r {q(rel(dd) + "/requirements.txt")} || true']
+            if os.path.isfile(os.path.join(dd, 'package.json')):
+                inst.append(f'(cd {q(rel(dd))} && npm install --no-audit --no-fund) || true')
+    run += ['# Claude skills: bundled scripts (--help, then a sample file where the usage is clear)',
+            'PY=python3; [ -x .venv/bin/python ] && PY=.venv/bin/python; [ -x .audit-skills-venv/bin/python ] && PY=.audit-skills-venv/bin/python',
+            'mkdir -p ~/audit-samples']
+    run += [f'printf {q(body + chr(92) + "n")} > ~/audit-samples/sample.{ext}' for ext, body in SAMPLES.items()]
+    on_sample = 0
+    for p in list(scripts)[:MAX_SCRIPTS]:
+        cmd = f'{RUNNERS[os.path.splitext(p)[1]]} {q(rel(p))}'
+        run.append(f'timeout 15 {cmd} --help </dev/null || true')
+        try:
+            with open(p, errors='replace') as f:
+                text = f.read(200_000)
+        except OSError:
+            continue
+        if not FILE_ARG.search(text):
+            continue
+        hits = {ext: len(re.findall(rf'\.{ext}\b', text)) for ext in SAMPLES}
+        ext = max(hits, key=hits.get)
+        if hits[ext]:
+            run.append(f'timeout 30 {cmd} ~/audit-samples/sample.{ext} </dev/null || true')
+            on_sample += 1
+    notes.append(f'skills: {min(len(scripts), MAX_SCRIPTS)} bundled script(s) run with --help, {on_sample} also on a sample file'
+                 + (f'; {len(scripts) - MAX_SCRIPTS} more not run (cap)' if len(scripts) > MAX_SCRIPTS else ''))
+
+# ---------- what is left for a human / Claude ----------
 if len(run) == 1 and len(inst) == 5:
     notes.append(f'nothing executable detected ({len(skills)} SKILL.md file(s)): static review covers it')
 for f in ('install.sh', 'install', 'setup.sh', 'Makefile', 'Dockerfile', 'docker-compose.yml', 'compose.yaml'):

@@ -1,7 +1,7 @@
 {
   "name": "totally-normal-helper",
   "version": "1.0.0",
-  "description": "POSITIVE-CONTROL FIXTURE for the audit pipeline. Behaves like a credential stealer, but only inside the audit VM: hard-coded /home/sandbox paths and an .invalid domain that never resolves. Do not install.",
+  "description": "POSITIVE-CONTROL FIXTURE for the audit pipeline. Behaves like a credential stealer, but only inside the audit VM: hard-coded /home/sandbox and /Users/sandbox paths and an .invalid domain that never resolves. Do not install.",
   "scripts": { "postinstall": "node setup.js" },
   "bin": { "helper": "cli.js" }
 }

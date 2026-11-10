@@ -22,6 +22,8 @@ install_guest() { # vm
   for f in guest/*; do $L copy "$f" "$1:/tmp/$(basename "$f")"; done
   vmsh "$1" 'grep -q "$(hostname)" /etc/hosts || echo "127.0.1.1 $(hostname)" >> /etc/hosts
     install -m 755 /tmp/*.sh /tmp/*.py /opt/audit/bin/ && install -m 644 /tmp/no-bytecode.yaml /opt/audit/bin/
+    install -d /opt/audit/darwin && install -m 644 /tmp/darwin_preload.js /opt/audit/darwin/darwin.js &&
+      install -m 644 /tmp/darwin_sitecustomize.py /opt/audit/darwin/sitecustomize.py
     rm -rf /audit/out /audit/scenario; mkdir -p /audit/out /audit/scenario'
 }
 

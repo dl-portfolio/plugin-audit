@@ -7,7 +7,7 @@ description: Full safety audit of a third-party tool before the user runs it on 
 
 Repo root = the `plugin-audit` folder that holds this `.claude/` (on this Mac: `~/Projects/Security/plugin-audit`).
 Run every command from there. Method: `README.md`. Scanner vetting: `scanner-vetting.md`.
-Users can also run the whole thing without you: `./audit <target>` (same steps, auto scenario, headless review).
+Users can also run the whole thing without you: `./audit <target>` (same steps; a headless Claude writes the scenario from the README and the review).
 
 ## Rules (non-negotiable)
 - Never run, install, build, import or open the target on the Mac. It only runs inside the VM via `audit.sh`.
@@ -16,6 +16,8 @@ Users can also run the whole thing without you: `./audit <target>` (same steps, 
 - Static red flags are never cleared by a clean runtime run. Runtime can only add findings.
 - Pin: the report is valid only for the audited commit.
 - Files the user's deny rules hide (`static/unreadable-by-reviewer.txt`) stay unread unless the user ran `./audit.sh copies <id>` (then read `review-copies/`, see its INDEX.txt). Never work around the deny rules yourself; list unread files under "Not covered".
+- Offensive and dual-use tools (attack or recon frameworks, exploit kits, features that disrupt or track other people or services) still get a full report and verdict. Describe those features by **what** they do, **who** they affect and what they can reach, never **how**: no exploit steps, payloads, code excerpts or target-specific detail. The report answers whether the user can safely run it, not how the attack works. Features aimed at third parties are a finding; say so plainly.
+- Always leave a report. If writing it is blocked or cut off, write it again with less technical detail (verdict, bottom line, what it can touch, findings at the what/who level, precautions) rather than stopping without one.
 
 ## Steps
 1. **Fetch + static** (background for big repos): `./audit.sh new <target> [ref]` → prints `AUDIT_ID`. Output in `work/<AUDIT_ID>/`: `static/static-summary.txt`, raw JSON per scanner, `src/` (read-only copy, symlinks stripped; `static/symlinks.txt` lists them), and an auto-generated runtime scenario in `scenario/auto/` (`install.sh`, `run.sh`, `notes.txt`).

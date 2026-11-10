@@ -1,3 +1,13 @@
+<p align="center"><img src="docs/assets/banner.svg" alt="plugin-audit: supply-chain vetting for AI agent extensions" width="100%"></p>
+
+<p align="center">
+  <img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-0b7bd6">
+  <img alt="Host: macOS on Apple silicon" src="https://img.shields.io/badge/host-macOS%20%C2%B7%20Apple%20silicon-334155">
+  <img alt="Sandbox: Lima VM, Ubuntu 24.04" src="https://img.shields.io/badge/sandbox-Lima%20VM%20%C2%B7%20Ubuntu%2024.04-334155">
+  <img alt="LLM: Claude Code" src="https://img.shields.io/badge/LLM-Claude%20Code-d97757">
+  <img alt="Tools audited: 22" src="https://img.shields.io/badge/tools%20audited-22-38bdf8">
+</p>
+
 # plugin-audit: supply-chain vetting for AI agent extensions
 
 ```bash
@@ -7,6 +17,8 @@
 Each run downloads the target into a throwaway Linux VM, scans it statically, installs and runs it there with decoy
 credentials and the network blocked, deletes the VM, and has an LLM reviewer write a report with a verdict:
 **SAFE TO USE / USE WITH PRECAUTIONS / DO NOT USE**. Nothing from the target ever runs on the host.
+
+<p align="center"><img src="docs/assets/pipeline.svg" alt="How an audit runs: 1 Fetch (pinned commit, in the VM), 2 Static scan (own rules and 5 scanners, no network), 3 Scenario (auto plus contained LLM), 4 Runtime test (install, run, run-darwin with decoys and a network sinkhole), 5 Review (read-only LLM, verdict and precautions)" width="100%"></p>
 
 ## Why
 Agent extensions are a new supply-chain surface. A skill, plugin or MCP server runs with the agent's file, shell and
@@ -71,6 +83,10 @@ flowchart LR
 | Compromised scanner or toolchain | Pinned versions with checksums, ≥ 2 weeks old, scanners vetted and run without network |
 
 ## Results so far
+<img alt="SAFE TO USE: 2" src="https://img.shields.io/badge/SAFE%20TO%20USE-2-2ea44f">
+<img alt="USE WITH PRECAUTIONS: 19" src="https://img.shields.io/badge/USE%20WITH%20PRECAUTIONS-19-d29922">
+<img alt="DO NOT USE: 1" src="https://img.shields.io/badge/DO%20NOT%20USE-1-cf222e">
+
 22 real tools audited (Claude Code skills and plugins, MCP servers, agent frameworks, CLIs; see
 [reports/README.md](reports/README.md)):
 2 SAFE TO USE, 19 USE WITH PRECAUTIONS, 1 DO NOT USE. None showed malware aimed at the user. The precautions are the
@@ -276,6 +292,8 @@ roughly 20-25M tokens, about **$15-25 on the API**.
 | `tests/fixture-malicious/` | positive control | VM only |
 | `scanner-vetting.md` | why each third-party scanner was trusted, and at which commit | docs |
 | `reports/` | written reports + index | docs |
+| `docs/assets/` | README graphics (hand-written SVG, no third-party icons) | docs |
+| `LICENSE`, `NOTICE` | Apache-2.0 and copyright | docs |
 
 ## Extending it
 **Before you edit:** never change `audit`, `audit.sh` or `guest/` while an audit runs (bash reads scripts as it runs;
@@ -408,3 +426,12 @@ a decoy login keychain, and a LaunchAgents/login-items diff for persistence. App
 macOS VMs per Mac, so one audit at a time. Lima's plain mode (no guest agent) is unverified for macOS guests. Days of
 work and a second toolchain to keep current: worth it only for a macOS-native, high-risk target, run by hand rather
 than in a weekly batch.
+
+## License
+[Apache License 2.0](LICENSE). Copyright 2026 Daniel Lennart (see [NOTICE](NOTICE)).
+
+The VM downloads its scanners and toolchains at build time; none are distributed with this repository, and each
+keeps its own licence. One to know about: the [semgrep community rules](https://github.com/semgrep/semgrep-rules)
+are under the Semgrep Rules License, which allows internal use but not offering them as part of a competing hosted
+service. That matters only if you turn this into a service. Reports in `reports/` describe third-party projects at a
+specific commit and are not endorsements or security guarantees.

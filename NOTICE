@@ -1,0 +1,6 @@
+plugin-audit
+Copyright 2026 Daniel Lennart
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+Third-party scanners and toolchains are downloaded into the audit VM at build time and are
+not distributed with this repository; each keeps its own licence.

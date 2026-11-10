@@ -4,5 +4,4 @@ vm/provision.sh:private-key:173
 vm/provision.sh:aws-access-token:176
 vm/provision.sh:generic-api-key:182
 vm/provision.sh:stripe-access-token:186
-guest/dynamic.sh:aws-access-token:39
 guest/dynamic.sh:aws-access-token:53

@@ -238,6 +238,11 @@ resolver, logs every query) and tinyproxy (allowlist in `vm/provision.sh`); `gue
   dontAsk`, and keep your own Claude Code deny rules. Text planted in the target can at worst write a bad scenario
   (which runs in the VM, and cannot drop auto-scenario lines) or a wrong report.
 - **Static red flags are never cleared by a clean runtime run.** Runtime can only add findings.
+- **Offensive and dual-use tools** (attack or recon frameworks, features that disrupt or track other people) still
+  get a full report and verdict, but the report describes such features by *what* they do and *who* they affect,
+  never *how*: no exploit steps, payloads or code excerpts. Features aimed at third parties are a finding in their
+  own right. Every audit leaves a report: if writing it is blocked or cut off, a less detailed one is written rather
+  than none. (Rules in `.claude/skills/audit/SKILL.md`.)
 - **What leaves the VM:** scanner output, the source copy (symlinks stripped, read-only), runtime logs. No decoy is a
   real secret (every value contains `AUDITDECOY`).
 - **What goes to Anthropic:** the parts of the target the Claude calls read (README, manifests, source files, the

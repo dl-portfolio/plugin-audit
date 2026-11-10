@@ -1,7 +1,27 @@
-# Tool audits
+# 📋 Audit reports
 
-New audit: `./audit <github-url | git url | local folder>` in a terminal, or `/audit <target>` in Claude Code.
-Every verdict is for the audited commit only. Re-audit before updating.
+> [!NOTE]
+> **What this is:** every verdict plugin-audit has produced, one row per tool, newest first per tool. A verdict holds
+> **only for the commit that was audited**: re-audit before installing a newer version. Rows and reports are written
+> by the tool, not by hand. How audits work: [project README](../README.md).
+
+| Verdict | Means | Count |
+|---|---|---|
+| ✅ **SAFE TO USE** | Nothing beyond what its stated purpose needs | 2 |
+| ⚠️ **USE WITH PRECAUTIONS** | Legitimate but risky; the report lists exactly what to do | 19 |
+| ⛔ **DO NOT USE** | Malicious, deceptive, or built to harm other people | 1 (plus the test fixture) |
+
+> [!WARNING]
+> **Dangers found across these tools.** No tool attacked the user, but these came up repeatedly:
+> - 🔓 **AI agents run with permission prompts off** (paperclip, video_explainer, harness2)
+> - 🌐 **Local web APIs or ports with no login**, some reachable from your network (job-ops, digital_asset_inventory, paperclip, rtk's proxy)
+> - 🔑 **Secrets stored in plaintext** (obsidian-llm-wiki-local, job-ops, maka, telegram-bot-dumper)
+> - 📡 **Telemetry or analytics on by default** (paperclip, job-ops)
+> - 🔄 **Installs or updates that follow `latest`/`main`**, so you get unaudited code later (rtk, mattpocock/skills, BMAD-METHOD, cloudflare/security-audit-skill)
+> - 🎯 **Features aimed at third parties** (DedSecLab)
+
+**How to read a row:** *Verdict* is the outcome; *One line* gives the main reason and the key precautions; *Report*
+links the full report (findings with evidence, what was tested, how to use it safely, what was not covered).
 
 | Tool | Verdict | One line | Report |
 |---|---|---|---|
@@ -29,12 +49,22 @@ Every verdict is for the audited commit only. Re-audit before updating.
 | QuacksOnWelfare/DedSecLab | **DO NOT USE** | Not malware aimed at you (no phone-home, placeholders only). But it ships features aimed at other people under a "defensive lab" label: crashing Xbox Live parties, pulling the IPs of people in your game lobbies and calls, IP tracking with Discord alerts, a lag switch. Its server installer makes every lab user root, a real ip-api key is committed, and the hidden updater strips download warnings with no signature. Windows/Linux only. The VM run exercised nothing, so the verdict rests on code review | [dedseclab-0fc1d40](dedseclab-0fc1d40.md) |
 | tests/fixture-malicious | **DO NOT USE** (positive control) | Fake stealer: caught by static scan (creds, `.bashrc`, VM check) and runtime (4 decoy reads, exfil attempt, persistence, leftover process, direct egress) | [fixture-malicious-b5c6f34](fixture-malicious-b5c6f34.md) (earlier: [02dd3d6](fixture-malicious-02dd3d6.md)) |
 
-No target showed malicious behaviour toward the user. Every "precautions" verdict comes from risky defaults or handling, with concrete fixes in each report. DedSecLab is "do not use" because its features target third parties and its framing contradicts its code, not because it attacks you.
+> [!IMPORTANT]
+> Reports dated before 2026-11-09 tested each tool with a **generic scenario only** (install its dependencies, run
+> `--help`), so for many tools the product itself never ran and the verdict rests on code review. Each report's
+> runtime section says so. Re-audits: [#2](https://github.com/dl-portfolio/plugin-audit/issues/2). Clearer report
+> format: [#1](https://github.com/dl-portfolio/plugin-audit/issues/1).
 
 ## What every audit covers
-Static scans: our Claude-Code/install-hook/malware checks, gitleaks, osv-scanner (incl. known-malicious packages), semgrep, plus SkillSpector and Cisco skill-scanner for skills, plugins and MCP. Runtime: install and run in a throwaway Linux VM with ~30 decoy credentials, network blocked and logged. Then a read-only code review. Method: [../README.md](../README.md).
+| Check | What |
+|---|---|
+| 🔍 Static | Own checks (Claude Code artefacts, install hooks, malware and macOS stealer patterns), gitleaks, osv-scanner (incl. known-malicious packages), semgrep; SkillSpector and Cisco skill-scanner for skills, plugins and MCP |
+| 🧪 Runtime | Install and use in a throwaway Linux VM with decoy credentials and the network sinkholed; JS/Python code also run as if on macOS (reports from 2026-11-10 on) |
+| 👀 Review | Read-only LLM review of the code against both results |
 
 ## Known limits
-- **Linux VM:** macOS-only behaviour is checked in code, not at runtime.
-- **Evasion:** malware can detect VMs or wait, so a clean run is evidence, not proof.
-- **Reviewer blind spot:** your Claude Code deny rules stop the reviewer reading target files named `secrets*`, `credentials*` or `.env*` (devvm: `internal/secrets/*`, `internal/proxy/secrets*.go`; job-ops: `.env.example`, `llm/credentials*.ts`). The VM scanners still cover them. To include them, run `./audit.sh copies <id>` yourself, then ask Claude to re-review.
+| Limit | What it means |
+|---|---|
+| Linux VM | Native macOS behaviour is checked in code, not at runtime |
+| Evasion | Malware can detect VMs or wait; a clean run is evidence, not proof |
+| Reviewer blind spot | Claude Code deny rules can stop the reviewer reading files named `secrets*`, `credentials*` or `.env*` (devvm: `internal/secrets/*`, `internal/proxy/secrets*.go`; job-ops: `.env.example`, `llm/credentials*.ts`). The VM scanners still cover them; run `./audit.sh copies <id>`, then re-review |

@@ -1,442 +1,405 @@
-<p align="center"><img src="docs/assets/banner.svg" alt="plugin-audit: supply-chain vetting for AI agent extensions" width="100%"></p>
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img src="docs/assets/banner-light.svg" alt="plugin-audit: supply-chain vetting for AI agent extensions" width="100%">
+</picture>
 
 <p align="center">
-  <img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-0b7bd6">
-  <img alt="Host: macOS on Apple silicon" src="https://img.shields.io/badge/host-macOS%20%C2%B7%20Apple%20silicon-334155">
-  <img alt="Sandbox: Lima VM, Ubuntu 24.04" src="https://img.shields.io/badge/sandbox-Lima%20VM%20%C2%B7%20Ubuntu%2024.04-334155">
-  <img alt="LLM: Claude Code" src="https://img.shields.io/badge/LLM-Claude%20Code-d97757">
-  <img alt="Tools audited: 22" src="https://img.shields.io/badge/tools%20audited-22-38bdf8">
+  <a href="LICENSE"><img src="docs/assets/badges/license.svg" alt="License: Apache-2.0"></a>
+  <img src="docs/assets/badges/host.svg" alt="Host: macOS on Apple silicon">
+  <img src="docs/assets/badges/sandbox.svg" alt="Sandbox: Lima VM, Ubuntu 24.04">
+  <img src="docs/assets/badges/llm.svg" alt="LLM: Claude Code">
+  <a href="reports/README.md"><img src="docs/assets/badges/audited.svg" alt="Tools audited: 22"></a>
 </p>
 
-# plugin-audit: supply-chain vetting for AI agent extensions
+# plugin-audit
+
+**Vet a Claude Code plugin, skill, MCP server or CLI tool before it touches your machine.** One command downloads it
+into a throwaway VM, scans it, runs it against decoy credentials with the network sinkholed, deletes the VM, and has
+a sandboxed LLM write a report with a verdict: ✅ **SAFE TO USE**, ⚠️ **USE WITH PRECAUTIONS** or ⛔ **DO NOT USE**.
 
 ```bash
-./audit https://github.com/owner/repo        # or an https git URL or a local folder, plus an optional ref/commit
-```
-`plugin-audit` checks Claude Code plugins, skills, MCP servers, CLI tools and libraries **before** you install them.
-Each run downloads the target into a throwaway Linux VM, scans it statically, installs and runs it there with decoy
-credentials and the network blocked, deletes the VM, and has an LLM reviewer write a report with a verdict:
-**SAFE TO USE / USE WITH PRECAUTIONS / DO NOT USE**. Nothing from the target ever runs on the host.
-
-<p align="center"><img src="docs/assets/pipeline.svg" alt="How an audit runs: 1 Fetch (pinned commit, in the VM), 2 Static scan (own rules and 5 scanners, no network), 3 Scenario (auto plus contained LLM), 4 Runtime test (install, run, run-darwin with decoys and a network sinkhole), 5 Review (read-only LLM, verdict and precautions)" width="100%"></p>
-
-## Why
-Agent extensions are a new supply-chain surface. A skill, plugin or MCP server runs with the agent's file, shell and
-network access, often on a developer laptop full of credentials. It can attack in ways classic scanners don't model:
-Claude Code hooks that run on every tool call, MCP servers started by a config file, install scripts, a SKILL.md that
-quietly tells the agent to fetch and run something, or text that tries to talk the *reviewer* out of a finding.
-Marketplaces install from `main` and update silently. This project is the gate I put in front of my own machine.
-
-## Highlights
-- **Defence in depth, three independent signals:** static analysis (own rules for agent artefacts plus five vetted
-  scanners), behavioural analysis in a monitored VM, and an LLM code review whose output is checked against both.
-  A clean runtime never clears a static red flag.
-- **Honeypot-style runtime:** ~50 decoy credentials (SSH, cloud, GitHub, Claude, browser, wallet; Linux and macOS
-  paths), kernel-level watching (strace + inotify), every DNS lookup and connection logged and refused, persistence diff.
-- **macOS coverage without a Mac VM:** a `run-darwin` phase makes interpreted code believe it runs on macOS
-  (Node/Python runtime patching, Mac home with decoys, logging stand-ins for `security`, `osascript`, `launchctl`...),
-  so Mac-only stealer branches execute and are recorded.
-- **LLM in the loop, but contained:** the headless model that plans the test and writes the report has no shell, no
-  network and write access to exactly the files it must produce. Target text is treated as data, and prompt injection
-  aimed at the reviewer is itself a finding. The model can add test coverage but never remove the baseline.
-- **Reproducible and pinned:** targets are pinned to a commit; every toolchain and scanner in the VM is pinned by
-  version and sha256 or commit, at least two weeks old; third-party scanners were vetted before use
-  ([scanner-vetting.md](scanner-vetting.md)).
-- **Tested against a positive control:** a fake stealer fixture (credential theft, exfil, persistence, VM checks,
-  a macOS-only branch) must come out DO NOT USE after every change.
-- **Measured cost:** ~2.2M tokens and about $2 per audit at API rates, from the real transcripts
-  ([details](#claude-usage-and-cost)).
-
-## Architecture
-```mermaid
-flowchart LR
-  subgraph Host["Mac host (never runs target code)"]
-    A["./audit"] --> S["headless Claude: scenario<br/>Read/Grep/Glob + edit 3 files"]
-    A --> R["headless Claude: review<br/>Read/Grep/Glob + edit reports/"]
-    W[("work/ID/<br/>read-only src copy, summaries")]
-    S --> W
-    W --> R
-  end
-  subgraph VM["Throwaway Lima VM (clone of audit-base)"]
-    F["fetch, pinned commit"] --> ST["static scan<br/>user auditor, no network"]
-    ST --> AS["auto scenario"]
-    AS --> I["install phase<br/>registries only, via logging proxy"]
-    I --> RU["run phase<br/>network closed, all attempts logged"]
-    RU --> RD["run-darwin phase<br/>macOS impersonation"]
-    RD --> AN["analyzer: decoy reads, hosts,<br/>persistence, leftovers"]
-  end
-  A -- "clone, copy guest/*" --> F
-  ST -- results --> W
-  AN -- results --> W
-  R --> REP["reports/ID.md + verdict"]
+./audit https://github.com/owner/repo
 ```
 
-## Threat model
-| Adversary capability | Mitigation |
-|---|---|
-| Malicious install script / hook / MCP server / bundled script runs code | Runs only in a disposable VM as a user without sudo; strace, inotify and a persistence diff record what it did |
-| Steals credentials | Only decoys exist; any read of one is reported, unexpected readers flagged as strong |
-| Exfiltrates or phones home | nftables lets the target reach loopback only; DNS and proxy log every name it asks for and refuse it (install phase: package registries only) |
-| Behaves differently on macOS, under CI, or in a VM | run-darwin phase; no `CI` in the run phase; static rules for VM and debugger checks; VM evasion stays a stated limit |
-| Prompt injection against the AI reviewer or planner | Target text is data; reviewer and planner have no shell, network or subagents and write only their own outputs; planted instructions are reported as findings; the planner cannot remove baseline tests |
-| Attacks the host through the pipeline (symlinks, git, archives) | Target fetched and unpacked inside the VM; source exported with symlinks removed, read-only; git never parses it on the host |
-| Compromised scanner or toolchain | Pinned versions with checksums, ≥ 2 weeks old, scanners vetted and run without network |
+> [!IMPORTANT]
+> The target is a **git repository** (a GitHub URL, any `https://` git URL, or a local folder), optionally with a
+> branch, tag or commit. Package names (`npm`, PyPI), marketplace names and `git@` SSH URLs are not accepted.
 
-## Results so far
-<img alt="SAFE TO USE: 2" src="https://img.shields.io/badge/SAFE%20TO%20USE-2-2ea44f">
-<img alt="USE WITH PRECAUTIONS: 19" src="https://img.shields.io/badge/USE%20WITH%20PRECAUTIONS-19-d29922">
-<img alt="DO NOT USE: 1" src="https://img.shields.io/badge/DO%20NOT%20USE-1-cf222e">
-
-22 real tools audited (Claude Code skills and plugins, MCP servers, agent frameworks, CLIs; see
-[reports/README.md](reports/README.md)):
-2 SAFE TO USE, 19 USE WITH PRECAUTIONS, 1 DO NOT USE. None showed malware aimed at the user. The precautions are the
-real-world findings: telemetry on by default, agents launched with permission prompts disabled, unauthenticated local
-web APIs, secrets stored in plaintext, installers that follow `latest`, auto-updating plugins, and skills that
-send agents to unaudited marketplaces. The one DO NOT USE ships features aimed at third parties under a "defensive
-lab" label. The positive control is caught by every layer, including its macOS-only branch, which only the run-darwin
-phase triggers.
-
-## Design decisions
-- **A VM, not a container.** Targets include install scripts and native code; a kernel boundary plus Lima's plain mode
-  (no mounts, port forwarding or agent) keeps a container escape off the host.
-- **Decoys over allowlists.** Instead of predicting what is suspicious, plant what a stealer wants and watch who
-  touches it. Expected readers (npm reading `.npmrc`) are whitelisted per decoy.
-- **Refuse, but log by name.** The run phase answers every DNS query with NXDOMAIN and keeps the proxy up only to log
-  refused hosts, so the report names the exfil host even though nothing left the VM.
-- **Spoofing instead of a macOS guest.** A real macOS VM costs days of work, licence limits and minutes per boot.
-  Runtime patching covers the interpreted stealers that dominate npm/PyPI malware at near-zero cost; native code is a
-  stated gap (see [Roadmap](#roadmap)).
-- **The LLM plans and explains, the pipeline decides what runs.** Model output can only add lines to a scenario that
-  executes inside the VM, and the verdict rubric is fixed in the skill, so a fooled model degrades coverage, not safety.
-- **Measure, don't guess.** Costs in this README come from the CLI transcripts, not estimates (except the roadmap).
-
-## Ways to run it
-- **`./audit <target>`** in a terminal: unattended, end to end (also fine from a scheduler or batch script).
-- **`/audit <target>`** inside Claude Code opened in this folder: same pipeline, but Claude reviews the runtime
-  scenario with you and uses a subagent for the review. `/audit <AUDIT_ID>` re-does only the review and report.
-
-Example verdicts: [reports/README.md](reports/README.md) (the original author's audits; keep them as examples or
-delete them in your fork).
-
-## Operator guide
-[Requirements](#requirements) · [Setup](#setup) · [Using it](#using-it) · [How it works](#how-it-works) ·
-[Trust model](#trust-model) · [Claude usage and cost](#claude-usage-and-cost) · [Repository layout](#repository-layout) ·
-[Extending it](#extending-it) · [Troubleshooting](#troubleshooting) · [Limits](#limits) · [Roadmap](#roadmap)
+**Contents:** [Why](#-why) · [Highlights](#-highlights) · [How an audit runs](#-how-an-audit-runs) ·
+[What is a scenario?](#-what-is-a-scenario) · [Architecture](#-architecture) ·
+[Threat model](#-threat-model) · [Design decisions](#-design-decisions) · [Results](#-results-so-far) ·
+[Trust model](#-trust-model) · [Cost](#-claude-usage-and-cost) · [Roadmap](#-roadmap) ·
+[Operator guide](#-operator-guide)
 
 ---
 
-## Requirements
-- Apple-silicon Mac (built and tested on macOS 26, arm64). Intel Macs and Linux hosts are untested.
-- [Homebrew](https://brew.sh); the first run installs [Lima](https://lima-vm.io) (tested with 2.3) from it.
-- ~10 GB free disk for the base VM, plus a few GB per audit while it runs (clones are deleted afterwards).
-- Network on the first run (Ubuntu image, toolchains, scanners) and per audit (fetching the target, packages).
-- Optional but recommended: [Claude Code](https://code.claude.com) CLI (`claude`), logged in with a subscription or
-  an API key. Without it you still get the scanner and runtime summaries in `work/<id>/`, but no written report.
+## 🎯 Why
+AI agent extensions are a new software supply chain, and they run with the agent's access to your files, shell and
+network.
 
-## Setup
-```bash
-git clone <this repo> plugin-audit && cd plugin-audit
-./audit setup                       # installs Lima if missing, builds the audit-base VM (~15 min, one time)
-./audit tests/fixture-malicious     # self-test: the report must come out DO NOT USE
+| Attack surface | Example | Why classic scanners miss it |
+|---|---|---|
+| Install-time code | `postinstall` scripts, plugin installers | Runs before any review |
+| Agent hooks | Claude Code hooks fire on every tool call | Config, not code |
+| MCP servers | Started automatically from `.mcp.json` | Often fetched with unpinned `npx`/`uvx` |
+| Prompt-only skills | A SKILL.md that tells the agent to fetch and run something | It is "just text" |
+| Reviewer manipulation | Text telling the AI reviewer the code is safe | Aimed at the auditor, not the user |
+| Silent updates | Marketplaces install from `main` | Yesterday's review covers a different commit |
+
+This project is the gate I put in front of my own machine.
+
+## ✨ Highlights
+| | Capability | What it means |
+|---|---|---|
+| 🧱 | **Three independent signals** | Static analysis, behaviour in a monitored VM, and an LLM code review. A clean runtime never clears a static red flag. |
+| 🍯 | **Honeypot runtime** | ~50 decoy credentials (SSH, cloud, GitHub, Claude, browsers, wallets; Linux and macOS paths), strace + inotify, persistence diff. |
+| 🕳️ | **Network sinkhole** | Every DNS lookup and connection is refused **and logged by name**, so the report names the exfil host. |
+| 🍎 | **macOS without a Mac VM** | A `run-darwin` phase tells JS/Python code it runs on macOS, so Mac-only stealer branches fire and are recorded. |
+| 🤖 | **Contained LLM** | The models that plan the test and write the report have no shell, no network, and can write only their own output files. |
+| 📌 | **Reproducible** | Targets pinned to a commit; every scanner and toolchain pinned by version + checksum or commit, ≥ 2 weeks old, [vetted](scanner-vetting.md). |
+| 🧪 | **Positive control** | A fake stealer fixture must come out ⛔ DO NOT USE after every pipeline change. |
+| 💰 | **Measured cost** | ~2.2M tokens, about $2 per audit at API rates, from real transcripts ([details](#-claude-usage-and-cost)). |
+
+## 🔄 How an audit runs
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/pipeline-dark.svg">
+  <img src="docs/assets/pipeline-light.svg" alt="How an audit runs: 1 Fetch in the VM, 2 Static scan in the VM, 3 Scenario in the VM and on the host, 4 Runtime test in the VM, 5 Review on the host" width="720">
+</picture>
+
+| Stage | What happens | Output (in `work/<id>/`) |
+|---|---|---|
+| 1. Fetch | Clone the base VM; download the target at a pinned commit inside it | `src/` (read-only copy, symlinks stripped) |
+| 2. Static scan | Own rules + gitleaks, osv-scanner, semgrep, SkillSpector, Cisco skill-scanner, as a user with no network | `static/static-summary.txt` |
+| 3. Scenario | Write `install.sh` + `run.sh`: how a user would install and use it ([explained below](#-what-is-a-scenario)) | `scenario/` |
+| 4. Runtime test | Run the scenario in three phases (below) with decoys and the sinkhole | `dynamic/dynamic-summary.txt` |
+| 5. Review | A read-only LLM checks the code against both summaries and writes the verdict | `reports/<id>.md` |
+
+Runtime phases:
+
+| Phase | Network | What it shows |
+|---|---|---|
+| **install** | Package registries only, via a logging proxy (`CI=1`) | Install scripts, what they fetch, what they touch |
+| **run** | None; every attempt logged and refused (no `CI` variable) | What the tool does when used: files, decoys, hosts, persistence |
+| **run-darwin** | None | Same as run, but JS/Python code is told it runs on macOS, with Mac-path decoys and stand-ins for `security`, `osascript`, `launchctl` |
+
+## 🧪 What is a scenario?
+> [!NOTE]
+> The runtime test only sees code that actually runs. The **scenario** decides what runs, so it decides how much the
+> runtime part of a report is worth.
+
+A scenario is two short shell scripts that run inside the VM as an unprivileged user:
+
+| Script | Plays the part of a user who… | Example |
+|---|---|---|
+| `install.sh` | installs the tool the way its README says | `npm ci`, `npx skills add <local copy>`, `uv pip install -e .` |
+| `run.sh` | uses it on harmless sample input | runs its CLI on a sample file, starts its MCP server and calls each tool, fires its Claude hooks |
+
+Where scenarios come from:
+
+| Source | Covers | Misses |
+|---|---|---|
+| **Generic baseline** (`guest/auto_scenario.py`, every audit) | Dependency install, `--help`/`--version`, every MCP server probed, every Claude hook fired, scripts bundled with skills | The product's own installer and real commands |
+| **Tailored** (headless LLM in `./audit`, reads the README as data) | Adds the documented install path and main use | Docker, GUI, Rust, anything needing real accounts. It can add lines but never remove the baseline |
+| **Hand-written** (`/audit` in Claude Code, or you) | Whatever you write | — (takes precedence) |
+
+> [!WARNING]
+> Reports written before 2026-11-09 used the **generic baseline only**. For BMAD-METHOD that meant `npm ci` and
+> `bmad --help`; its real installer never ran, so its verdict rests on code review. Re-audits are tracked in
+> [#2](https://github.com/dl-portfolio/plugin-audit/issues/2). With the tailored step, a test audit of
+> cloudflare/security-audit-skill ran its documented `npx skills add` install and its validators on valid and
+> invalid samples (65/65 tests).
+
+## 🧩 Architecture
+```mermaid
+flowchart TB
+  subgraph HOST["💻 Host: never runs target code"]
+    A["./audit"]
+    S["🤖 Scenario LLM<br/>read-only + 3 output files"]
+    R["🤖 Review LLM<br/>read-only + reports/"]
+    W[("work/ID/<br/>summaries + read-only source")]
+    REP["📄 reports/ID.md<br/>verdict"]
+  end
+  subgraph VM["📦 Throwaway Lima VM"]
+    F["Fetch at pinned commit"]
+    ST["Static scan<br/>no network"]
+    I["Install phase<br/>registries only"]
+    RU["Run phase<br/>sinkhole"]
+    RD["Run-darwin phase<br/>macOS impersonation"]
+  end
+  A --> F --> ST --> W
+  W --> S --> I --> RU --> RD --> W
+  W --> R --> REP
 ```
-Then:
-1. **Claude Code** (for the written report): install it and run `claude` once to log in. See
-   [Claude usage and cost](#claude-usage-and-cost) for what a subscription vs an API key means here.
-2. **`/audit` from other projects (optional):** `.claude/skills/audit/SKILL.md` names the repo root
-   (`on this Mac: ~/Projects/Security/plugin-audit`). Change that line to your clone's path, then link the skill
-   where Claude Code finds it, e.g. `ln -s "$PWD/.claude/skills/audit" ~/.claude/skills/audit`.
-3. **Claude Code sandbox:** `audit.sh` calls `limactl`, which macOS sandboxing blocks. The skill runs those Bash
-   calls with the sandbox disabled (and only those). In a terminal there is nothing to do.
-4. **Your deny rules:** if your Claude Code settings deny reading `secrets*`, `credentials*` or `.env*`, the
-   reviewer cannot read target files with those names. See `./audit.sh copies` under [Using it](#using-it).
 
-`vm/provision.sh` pins every tool by version and sha256 (or by commit), each at least two weeks old when pinned.
-To update them, edit that file and run `./audit.sh base` (rebuilds `audit-base`, ~15 min).
+Network inside the VM is enforced in three layers: **nftables** (target users may reach loopback only),
+**dnsmasq** (the only resolver; logs every query) and **tinyproxy** (allowlist; logs every host).
 
-## Using it
-```
-./audit <target> [ref]                 # everything: VM, static, scenario, runtime, VM deleted, review -> reports/<id>.md
-./audit setup                          # install Lima + build audit-base only
+## 🚨 Threat model
+What a malicious extension could try, mapped to [MITRE ATT&CK](https://attack.mitre.org),
+[MITRE ATLAS](https://atlas.mitre.org) and OWASP ([LLM Top 10 2025](https://genai.owasp.org/llm-top-10/),
+[Agentic Top 10 2026](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/)).
 
-./audit.sh new <target> [ref]          # clone VM, fetch, static scan, auto scenario  -> prints AUDIT_ID
-./audit.sh run <id> [install.sh run.sh]   # runtime test (default: work/<id>/scenario/*.sh, else scenario/auto/*)
-./audit.sh destroy <id>                # delete the VM clone (results stay in work/<id>/)
-./audit.sh copies <id>                 # YOU run this: readable copies of files your Claude deny rules hide
-./audit.sh base                        # rebuild audit-base (after editing vm/*)
-```
-Targets: `https://github.com/owner/repo` (resolved to a commit with `git ls-remote`), any `https://` git URL, or a
-local folder (identified by a content hash). A ref can be a branch, tag or full commit SHA. The **AUDIT_ID** is
-`<name>-<7-char commit>`. A report is valid only for that commit; re-audit before you update.
-
-Results in `work/<id>/` (git-ignored):
-
-| Path | What |
-|---|---|
-| `meta.json` | target, commit, VM name, time |
-| `src/` | read-only copy of the target, symlinks removed (`static/symlinks.txt` lists them) |
-| `static/static-summary.txt` | every scanner condensed; raw JSON next to it (`claude_checks`, `gitleaks`, `osv`, `semgrep`, `skillspector_*`, `cisco_*`) |
-| `scenario/auto/` | auto-generated `install.sh`, `run.sh`, `notes.txt` |
-| `scenario/install.sh`, `run.sh`, `notes.txt` | scenario written by Claude (or by you); wins over `auto/` |
-| `dynamic/dynamic-summary.txt` | what it did at runtime, per phase; `dynamic.json`, per-phase stdout/stderr, compressed strace, proxy/DNS/firewall logs, `macstub.log`, `scenario-used.txt` |
-| `review-copies/` | only after `./audit.sh copies` |
-
-To change the scenario and re-run: edit `work/<id>/scenario/{install,run}.sh`, then `./audit.sh run <id>` (the VM
-is kept by `./audit.sh new`, deleted by `./audit` itself, so with `./audit` start again with `new`).
-
-## How it works
-1. **Throwaway VM.** `audit.sh new` clones `audit-base` (Lima, Ubuntu 24.04 arm64, plain mode: no shared folders,
-   no port forwarding, no guest agent, no SSH agent or keys from the Mac). The target is downloaded *inside* the VM as
-   an archive pinned to a commit (git never parses it on the Mac). Local folders are copied in as a tarball.
-2. **Static scan** (`guest/static.sh`, no network, user `auditor`):
-   - our checks (`guest/claude_checks.py`): Claude Code artefacts (hooks, settings, `.mcp.json`, plugins,
-     marketplaces, commands, agents), code that runs on install or folder open, remote execution, credential access,
-     persistence, macOS stealer patterns (Keychain, `osascript` password dialogs, LaunchAgents, TCC, `dscl -authonly`,
-     browser and wallet folders under `~/Library`), anti-analysis, exfil channels, telemetry, obfuscation, prompt
-     injection aimed at agents or reviewers, hidden Unicode, binaries, and every outbound host;
-   - gitleaks; osv-scanner offline (including OpenSSF `MAL-` malicious-package advisories); semgrep with local rules;
-   - when skills, plugins or MCP configs exist: NVIDIA SkillSpector (`--no-llm`) and Cisco skill-scanner (static).
-     Why these scanners and how they were vetted: [scanner-vetting.md](scanner-vetting.md).
-3. **Runtime scenario.**
-   - `guest/auto_scenario.py` (in the VM) reads the manifests as data and writes `scenario/auto/`: npm/pnpm/yarn,
-     Python (uv), Go builds, CLI `--help`/`--version`, every MCP server probed (`guest/mcp_probe.py`), every Claude
-     hook fired with realistic events (`guest/fire_hooks.py`), and every script bundled with a skill
-     (`*.py|sh|js|cjs|mjs` next to a SKILL.md or under its `scripts/`) run with `--help`, plus on a small sample file
-     when its source plainly takes one file of a known type. Repo installers, Makefiles and Docker are listed in
-     `notes.txt` but not run.
-   - `./audit` then runs a headless Claude (the skill's step 2). It reads the README and manifests as untrusted data
-     and writes `scenario/{install,run}.sh` + `notes.txt` for the documented install path and main use on harmless
-     inputs. Any auto-scenario line it leaves out is appended again, so text in the target can add coverage but never
-     remove it. If it writes nothing, the auto scenario runs. An existing `scenario/*.sh` (from `/audit` or you) wins.
-4. **Runtime test** (`guest/dynamic.sh`, user `sandbox`, no sudo) under `strace`, with ~30 decoy credentials
-   (SSH, AWS, gh, npm, Claude, browser, wallet files, env vars, a project `.env`) watched by strace and inotify:
-   - **install** phase: only package registries reachable, through a logging allowlist proxy; `CI=1`.
-   - **run** phase: no network; every DNS lookup, proxy request and direct connection is logged and refused. No `CI`
-     variable, so code that goes quiet under CI still shows itself.
-   - **run-darwin** phase (only when the target has its own JS/TS/Python): `run.sh` again, with the code told it is on
-     macOS. A Node preload (`guest/darwin_preload.js`) and a Python `sitecustomize` (`guest/darwin_sitecustomize.py`)
-     report darwin and `HOME=/Users/sandbox`, which holds Mac-path decoys (Keychain, Chrome/Brave/Firefox profiles,
-     Exodus/Electrum/MetaMask, Safari cookies, Messages, Notes, Telegram, `~/.ssh`, `~/.aws`, `~/.zsh_history`).
-     `security`, `osascript`, `launchctl`, `sw_vers`, `system_profiler`, `ioreg`, `dscl`, `defaults`, `pbpaste`,
-     `screencapture` and others exist at their Mac paths as one logging stand-in (`guest/macstub.sh`) that answers
-     with decoy values. The summary's `macOS SPOOF` section lists what happened only in this phase.
-   - afterwards: persistence diff (startup files, cron, autostart, `~/Library/LaunchAgents`, new executables),
-     leftover processes. `guest/analyze_dynamic.py` turns it all into `dynamic-summary.txt`.
-5. **Read-only Claude review** of code + both summaries → `reports/<id>.md` (template and verdict rubric in
-   `.claude/skills/audit/SKILL.md`) and a row in `reports/README.md`.
-6. **Clean-up:** `audit.sh destroy` deletes the VM; results stay in `work/<id>/`.
-
-Network in the VM is enforced by nftables (`auditor` and `sandbox` may only reach loopback), dnsmasq (the only
-resolver, logs every query) and tinyproxy (allowlist in `vm/provision.sh`); `guest/netmode.sh` switches between
-`open` (root fetches the target), `install`, `run` and `closed`.
-
-## Trust model
-- **The target is hostile until proven otherwise.** It is fetched, scanned and run only in the VM, as users without
-  sudo, with the network closed or allowlisted. Everything it contains (README, code, comments, SKILL.md) is data.
-- **The headless Claude calls in `./audit` cannot execute anything.** The scenario step gets Read/Grep/Glob plus
-  edits of exactly `work/<id>/scenario/{install.sh,run.sh,notes.txt}`; the review gets Read/Grep/Glob plus edits under
-  `reports/`. Both have Bash, web fetch/search, subagents and notebooks disallowed, run with `--permission-mode
-  dontAsk`, and keep your own Claude Code deny rules. Text planted in the target can at worst write a bad scenario
-  (which runs in the VM, and cannot drop auto-scenario lines) or a wrong report.
-- **Static red flags are never cleared by a clean runtime run.** Runtime can only add findings.
-- **Offensive and dual-use tools** (attack or recon frameworks, features that disrupt or track other people) still
-  get a full report and verdict, but the report describes such features by *what* they do and *who* they affect,
-  never *how*: no exploit steps, payloads or code excerpts. Features aimed at third parties are a finding in their
-  own right. Every audit leaves a report: if writing it is blocked or cut off, a less detailed one is written rather
-  than none. (Rules in `.claude/skills/audit/SKILL.md`.)
-- **What leaves the VM:** scanner output, the source copy (symlinks stripped, read-only), runtime logs. No decoy is a
-  real secret (every value contains `AUDITDECOY`).
-- **What goes to Anthropic:** the parts of the target the Claude calls read (README, manifests, source files, the
-  summaries). Don't audit code you may not share with your model provider.
-- **Positive control:** `tests/fixture-malicious/` is a fake stealer that only targets the VM users
-  (`/home/sandbox`, `/Users/sandbox`, an `.invalid` exfil host). Re-run it after every pipeline change.
-
-## Claude usage and cost
-`./audit` makes two headless `claude -p` calls per audit (scenario, review). They pass no `--model`, so they use
-your Claude Code default model. Measured from the CLI transcripts of 20 reviews and 2 scenario runs (Nov 2026, all on
-Claude Opus 5.5; output includes thinking):
-
-| Call | Tokens processed, median (range) | Share that is cache reads | Output | API cost, median (range) |
+| Threat | ATT&CK | ATLAS / OWASP | How plugin-audit handles it | Residual risk |
 |---|---|---|---|---|
-| Scenario | 0.33M (0.17-0.50M), 2 runs only | ~70% | 2-7k | $0.61 ($0.29-0.93) |
-| Review | 1.84M (0.35-5.34M) | ~93% | 16k (5-21k) | $1.36 ($0.41-2.34) |
-| **Per audit** | **~2.2M** | | | **~$2 ($0.70-3.30)** |
+| Malicious code at install or first use (install scripts, hooks, MCP servers, bundled scripts) | T1195.002, T1059 (.004 .006 .007) | AML.T0010.005, AML.T0104 · LLM03, ASI04 | Runs only in the VM as a user without sudo; strace, inotify, persistence diff | Code paths the scenario does not reach |
+| Credential theft from files, browsers, Keychain, agent config | T1552.001, T1555.003, T1555.001 | AML.T0083, AML.T0098 · LLM02 | Only decoys exist; every read is logged; unexpected readers flagged | — |
+| Exfiltration and C2 | T1041, T1567, T1071.004, T1105 | AML.T0086 | nftables loopback-only; DNS refused + logged; proxy refuses + logs by name | HTTPS content is not inspected |
+| Persistence | T1543.001, T1546.004, T1053.003 | — | Before/after diff of startup files, cron, autostart, `~/Library/LaunchAgents` | — |
+| Fake password prompt | T1056.002, T1059.002 | — | Static rule; `osascript` stand-in records the dialog | — |
+| Sandbox, CI or OS evasion | T1497 (.001 .003), T1082 | — | run-darwin phase; no `CI` in run phase; static VM-check rules | VM-aware or time-delayed malware ([#6](https://github.com/dl-portfolio/plugin-audit/issues/6)) |
+| Obfuscated payloads | T1027 | — | Static rules for decoded execution, large base64 blobs; five scanners | — |
+| Skill or tool text that steers the agent | — | AML.T0051.001, AML.T0080, AML.T0053 · LLM01, LLM06, ASI01, ASI02, ASI06 | Static injection rules; reviewer reads every SKILL.md; agent-steering is a finding | Prompt-only skills never execute ([#5](https://github.com/dl-portfolio/plugin-audit/issues/5)) |
+| Injection aimed at the reviewer or scenario writer | — | AML.T0051.001 · LLM01 | LLMs have no shell/network; output-only writes; planted text is reported | A fooled reviewer can misjudge severity |
+| Rug pull after review | — | AML.T0109 · ASI04 | Verdict pinned to a commit; unpinned installs flagged | Re-audit before every update |
+| Compromised scanner or toolchain | T1195.001 | LLM03 | Vetted, pinned, ≥ 2 weeks old, run without network | Archive checksums not yet verified ([#8](https://github.com/dl-portfolio/plugin-audit/issues/8)) |
+| Attack on the host through the pipeline (archives, symlinks, git) | — | — | Unpacked inside the VM; exported read-only with symlinks stripped; git never parses it on the host | — |
 
-API cost assumes Opus 5.5 list prices: $4 / MTok input, $20 output, $0.20 cache reads, $5 cache writes (5-minute
-cache; with 1-hour cache writes at $8 the median review is $1.74). The review grows with how much source the reviewer
-reads: small skills cost ~$0.40, large apps (paperclip, maka, bmad-method) $2-2.30. A weekly batch of ~10 audits is
-roughly 20-25M tokens, about **$15-25 on the API**.
+<sub>ATT&CK IDs checked on attack.mitre.org; ATLAS IDs from MITRE's `atlas-data` release; OWASP Agentic (ASI) names
+from secondary sources pending the official PDF.</sub>
 
-**Subscription vs API key.** `claude -p` bills whatever the CLI is logged in as:
-- *Pro/Max subscription:* no per-token bill, but every audit counts against your plan's 5-hour and weekly usage
-  limits, and these are Opus calls with millions of (mostly cached) tokens each. Check your usage after the first
-  batch (`/usage` in Claude Code, or the usage card in the desktop app) before scheduling more. If a limit is hit,
-  the scenario step falls back to the auto scenario and the review call fails; the results stay in `work/<id>/`, so
-  run `/audit <id>` later to write the report.
-- *API key* (`ANTHROPIC_API_KEY` set in the environment): billed per token at the rates above. A dedicated Console
-  workspace with a monthly spend limit keeps a batch from surprising you.
-- *Cheaper:* `ANTHROPIC_MODEL=claude-sonnet-5-5 ./audit <target>` runs both calls on Sonnet 5.5 ($2 / $10 per MTok,
-  same $0.20 cache reads): about 40% less per audit by the same token counts. Review quality on Sonnet has not been
-  compared with Opus yet.
-- `/audit` inside Claude Code costs about the same per audit but lands in your interactive session (and its context).
+## 🧭 Design decisions
+| Decision | Why | Trade-off |
+|---|---|---|
+| **Reuse vetted scanners; write rules only for the gaps** | gitleaks, osv-scanner, semgrep, SkillSpector and Cisco already cover secrets, known-bad dependencies, code patterns and generic skill risks, and others maintain them. Our own rules (`guest/claude_checks.py`) cover only what they miss: Claude Code artefacts, macOS stealer patterns, reviewer-aimed injection, outbound host inventory. | Every scanner is third-party code: each was [vetted](scanner-vetting.md), pinned and run without network |
+| **A VM, not a container** | Targets include install scripts and native code; a kernel boundary keeps a container escape off the host | ~15 min to build the base VM once; each clone then starts in seconds |
+| **Decoys over guessing** | Plant what a stealer wants and watch who touches it, instead of predicting what looks suspicious | Expected readers (npm reading `.npmrc`) need an allowlist per decoy |
+| **Refuse, but log by name** | The sinkhole answers nothing, yet the report still names every host the tool wanted | A tool that gives up after one failed lookup shows less |
+| **Impersonate macOS instead of running it** | Covers the interpreted stealers that dominate npm/PyPI malware at near-zero cost | Native Mac code still sees Linux ([#6](https://github.com/dl-portfolio/plugin-audit/issues/6)) |
+| **The LLM plans and explains; the pipeline decides what runs** | Model output can only add scenario lines that run in the VM; the verdict rubric is fixed | A fooled model reduces coverage, not safety |
+| **Pin everything, with a 2-week cooldown** | A freshly hijacked release is usually caught by others first | Slower to pick up fixes |
+| **Measure, don't guess** | Costs below come from the CLI transcripts | Only Opus measured so far ([#7](https://github.com/dl-portfolio/plugin-audit/issues/7)) |
 
-## Repository layout
+## 📊 Results so far
+<img src="docs/assets/badges/verdict-safe.svg" alt="SAFE TO USE: 2"> <img src="docs/assets/badges/verdict-precautions.svg" alt="USE WITH PRECAUTIONS: 19"> <img src="docs/assets/badges/verdict-do-not-use.svg" alt="DO NOT USE: 1">
+
+**22 real tools** audited in November 2026: Claude Code skills and plugins, MCP servers, agent frameworks and CLIs.
+
+| Where | What you find there |
+|---|---|
+| [`reports/README.md`](reports/README.md) | The index: one row per tool with its verdict and a link |
+| `reports/<id>.md` | The full report for one tool at one commit |
+| `work/<id>/` (local only, git-ignored) | Raw scanner output, scenario, runtime logs |
+
+| Verdict | Count | What it meant in practice |
+|---|---|---|
+| ✅ SAFE TO USE | 2 | Prompt-only skill packs with no code, hooks or network |
+| ⚠️ USE WITH PRECAUTIONS | 19 | No malware, but risky defaults: telemetry on by default, agents launched with permission prompts off, local web APIs without login, secrets in plaintext, installs that follow `latest`, self-updating plugins |
+| ⛔ DO NOT USE | 1 | DedSecLab: features aimed at other people (disrupting game sessions, collecting players' IPs) under a "defensive lab" label |
+
+No tool showed malware aimed at the user. The fake stealer fixture is caught by every layer, including its
+macOS-only branch, which only the run-darwin phase triggers.
+
+> [!NOTE]
+> Reports are tool output and are not hand-edited. A clearer report format (so-what per finding, plain "what we
+> tested") is tracked in [#1](https://github.com/dl-portfolio/plugin-audit/issues/1).
+
+## 🔐 Trust model
+| Component | Can | Cannot |
+|---|---|---|
+| **Target code** | Run in the VM as `sandbox` (no sudo); reach package registries during install | Reach the host, the internet in run phases, or any real secret |
+| **Scenario LLM** (headless Claude) | Read the target as data; write `scenario/install.sh`, `run.sh`, `notes.txt` | Run commands, use the web, start subagents, remove baseline scenario lines |
+| **Review LLM** (headless Claude) | Read source and summaries; write under `reports/` | Run commands, use the web, start subagents |
+| **Scanners** | Read the source copy as user `auditor` | Reach the network |
+| **Anthropic** (model provider) | Receives the parts of the target the LLMs read | — so don't audit code you may not share with your provider |
+
+Rules the reviewer follows (`.claude/skills/audit/SKILL.md`):
+- Everything in the target is **data**; text that tries to instruct the reviewer is itself a finding.
+- **Offensive and dual-use tools** still get a full verdict, but their features are described by *what* they do and
+  *who* they affect, never *how*.
+- **Every audit leaves a report**, even if a shorter one.
+
+## 💰 Claude usage and cost
+Two headless Claude calls per audit. Measured over 20 reviews and 2 scenario runs (Claude Opus 5.5, thinking included):
+
+| Call | Tokens, median (range) | Cache reads | API cost, median (range) |
+|---|---|---|---|
+| Scenario | 0.33M (0.17-0.50M) | ~70% | $0.61 ($0.29-0.93) |
+| Review | 1.84M (0.35-5.34M) | ~93% | $1.36 ($0.41-2.34) |
+| **Per audit** | **~2.2M** | | **~$2 ($0.70-3.30)** |
+
+<sub>Opus 5.5 list prices: $4/MTok input, $20 output, $0.20 cache read, $5 cache write (5-minute cache). Large repos cost
+more because the reviewer reads more source.</sub>
+
+| Billing | What happens | Good for |
+|---|---|---|
+| **Subscription** (Pro/Max login) | No per-token bill; each audit counts against your 5-hour and weekly limits. If a limit is hit, the scenario falls back to the baseline and the review fails; run `/audit <id>` later | Occasional audits |
+| **API key** (`ANTHROPIC_API_KEY`) | Billed per token: a weekly batch of ~10 audits ≈ **$15-25**. Use a dedicated workspace with a spend limit | Scheduled batches |
+| **Cheaper model** (`ANTHROPIC_MODEL=claude-sonnet-5-5`) | ~40% less per audit; review quality not yet compared ([#7](https://github.com/dl-portfolio/plugin-audit/issues/7)) | Low-risk targets |
+
+## 📍 Roadmap
+Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issues/9) (pinned).
+
+| Item | Status | Why it matters | Issue |
+|---|---|---|---|
+| Mac-specific static rules | ✅ Done | Keychain, browser/wallet folders, `dscl -authonly`, fake password dialogs | — |
+| macOS impersonation (run-darwin) | ✅ Done | Mac-only stealer branches run in the Linux VM | — |
+| Tailored scenario + bundled skill scripts | ✅ Done | The product itself runs, not just `--help` | — |
+| Fix osv-scanner gap; scan repos without lockfiles | 🐛 Bug | The known-malicious-package check silently skipped one target | [#3](https://github.com/dl-portfolio/plugin-audit/issues/3) |
+| Clearer report format | 📋 Planned | So-what per finding, plain "what we tested" | [#1](https://github.com/dl-portfolio/plugin-audit/issues/1) |
+| Re-audit with tailored scenarios | 📋 Planned | Earlier reports never ran the product | [#2](https://github.com/dl-portfolio/plugin-audit/issues/2) |
+| Choose the review model on evidence | 📋 Planned | Possible ~40% saving | [#7](https://github.com/dl-portfolio/plugin-audit/issues/7) |
+| Agent run for prompt-only skills | 💡 Designed | See what a skill makes an agent do | [#5](https://github.com/dl-portfolio/plugin-audit/issues/5) |
+| **Linux host support** (QEMU/KVM, amd64 + arm64) | 💡 Designed | Run it on any Linux workstation or CI runner | [#4](https://github.com/dl-portfolio/plugin-audit/issues/4) |
+| Verify scanner archives by checksum | 💡 Designed | Closes a supply-chain gap in the auditor itself | [#8](https://github.com/dl-portfolio/plugin-audit/issues/8) |
+| Real macOS guest VM | 🧊 Manual only | Native Mac malware; days of work, licence limits | [#6](https://github.com/dl-portfolio/plugin-audit/issues/6) |
+
+<details>
+<summary><b>Design notes: agent run for prompt-only skills (#5)</b></summary>
+
+| Option | Model | Cost | Risk | Fidelity |
+|---|---|---|---|---|
+| **Local model (default)** | Ollama or llama.cpp on the host, Anthropic-compatible `/v1/messages` (e.g. Qwen3-Coder-30B-A3B, gpt-oss-20b) | None; ~10-20 min per audit | No real key in the VM | Injections tuned for Claude may not fire; a clean run is weak evidence |
+| **Capped Claude key (opt-in)** | Claude Sonnet 5.5 via a dedicated workspace key | Est. $1-2 per audit | Assume a hostile skill can steal the key: cap spend, rotate per batch | Same model as a real user's agent |
+
+- New `agent` phase after `run`: Claude Code (pinned) runs 2-3 realistic tasks with the skill loaded,
+  `bypassPermissions`, `--max-turns 25`, `timeout 300`, same decoys and logging.
+- Network: a new mode that allows only the model endpoint, and for a local server only the `/v1/messages` path,
+  so VM code cannot reach model pull or admin APIs.
+- Host side: bind the model server to the VM-facing address only; never enable `llama-server --tools`.
+</details>
+
+<details>
+<summary><b>Design notes: macOS coverage options</b></summary>
+
+| Option | Catches | Cost | Status |
+|---|---|---|---|
+| (a) Mac-specific static rules | Code that names Mac secrets, persistence, dialogs | Minutes | ✅ Done |
+| (b) Impersonate macOS in the Linux VM | Interpreted (JS/Python) Mac-only branches at runtime | ~150 lines | ✅ Done |
+| (c) Real macOS guest VM | Native Mac binaries, real Keychain/TCC/launchd | Days; 15-20 GB image; Apple licence allows 2 extra macOS VMs per Mac | [#6](https://github.com/dl-portfolio/plugin-audit/issues/6), manual only |
+</details>
+
+---
+
+## 📘 Operator guide
+
+### Requirements
+| Need | Detail |
+|---|---|
+| Host | Apple-silicon Mac (tested on macOS 26). Linux hosts: [#4](https://github.com/dl-portfolio/plugin-audit/issues/4) |
+| Packages | [Homebrew](https://brew.sh); the first run installs [Lima](https://lima-vm.io) (tested with 2.3) |
+| Disk | ~10 GB for the base VM, plus a few GB per audit while it runs |
+| Network | First run (image, toolchains, scanners) and each audit (target, packages) |
+| Claude Code CLI | Optional; needed for the scenario and the written report. Log in with a subscription or set an API key |
+
+### Setup
+1. Clone and build the VM (one time, ~15 min):
+   ```bash
+   git clone https://github.com/dl-portfolio/plugin-audit && cd plugin-audit
+   ./audit setup
+   ```
+2. Run the self-test. The report must come out ⛔ DO NOT USE:
+   ```bash
+   ./audit tests/fixture-malicious
+   ```
+3. Install [Claude Code](https://code.claude.com) and run `claude` once to log in.
+4. Optional, to use `/audit` from other projects: edit the repo path in `.claude/skills/audit/SKILL.md`, then link it:
+   ```bash
+   ln -s "$PWD/.claude/skills/audit" ~/.claude/skills/audit
+   ```
+
+> [!TIP]
+> Inside Claude Code, `audit.sh` needs the Bash sandbox disabled for its `limactl` calls (the skill does this for
+> those calls only). If your Claude Code deny rules hide `secrets*`, `credentials*` or `.env*`, the reviewer cannot
+> read target files with those names: run `./audit.sh copies <id>` to give it readable copies.
+
+### Running an audit
+| Target | Accepted |
+|---|---|
+| `https://github.com/owner/repo` | ✅ resolved to the current commit |
+| `https://github.com/owner/repo` + `v1.2.0`, a branch or a 40-char SHA | ✅ |
+| Any `https://` git URL | ✅ |
+| A local folder | ✅ identified by a content hash |
+| `npm`/PyPI package name, marketplace name, `git@` SSH URL | ❌ use the source repository URL |
+
+| Command | What it does |
+|---|---|
+| `./audit <target> [ref]` | Everything, end to end; writes `reports/<id>.md` |
+| `/audit <target>` (in Claude Code) | Same, but you review the scenario together |
+| `/audit <id>` (in Claude Code) | Re-do only the review and report for an existing audit |
+| `./audit.sh new <target> [ref]` | Clone VM, fetch, static scan, baseline scenario; prints the ID |
+| `./audit.sh run <id>` | Runtime test (uses `scenario/*.sh`, else `scenario/auto/*`) |
+| `./audit.sh destroy <id>` | Delete the VM clone; results stay |
+| `./audit.sh copies <id>` | You run this: readable copies of files your deny rules hide |
+| `./audit.sh base` | Rebuild the base VM after changing `vm/*` |
+
+The **ID** is `<name>-<first 7 chars of the commit>`. A verdict is valid for that commit only.
+
+### What an audit leaves on disk
+| Path in `work/<id>/` | Contents |
+|---|---|
+| `meta.json` | Target, commit, VM name, time |
+| `src/` | Read-only copy of the target, symlinks removed |
+| `static/static-summary.txt` | All scanners condensed; raw JSON alongside |
+| `scenario/auto/` | Generic baseline `install.sh`, `run.sh`, `notes.txt` |
+| `scenario/install.sh`, `run.sh`, `notes.txt` | Tailored or hand-written scenario (takes precedence) |
+| `dynamic/dynamic-summary.txt` | What happened at runtime, per phase; logs alongside |
+
+To change the scenario: edit `work/<id>/scenario/*.sh`, then `./audit.sh run <id>` (after `./audit.sh new`, which keeps
+the VM; `./audit` deletes it at the end).
+
+### Extending it
+> [!CAUTION]
+> Never edit `audit`, `audit.sh` or `guest/` while an audit runs: bash reads scripts as it runs. Check
+> `limactl list` for `aud-*` VMs first.
+
+| Change | Where | Rebuild VM? |
+|---|---|---|
+| Static rule | `LINE_RULES` in `guest/claude_checks.py` (try it: `python3 -I guest/claude_checks.py tests/fixture-malicious /tmp/cc.json`) | No |
+| Decoy (per run) | `guest/dynamic.sh` (`macdecoy` for Mac paths) | No |
+| Decoy (permanent) | `decoy` in `vm/provision.sh` | Yes |
+| Which reads count as suspicious | `STRONG_DECOY`, `EXPECTED_READERS` in `guest/analyze_dynamic.py` | No |
+| Package registry allowlist | `/etc/tinyproxy/allow.txt` in `vm/provision.sh` | Yes |
+| Tool or scanner version | `dl` / `gh_src` in `vm/provision.sh`; record vetting in `scanner-vetting.md` | Yes |
+| Scenario coverage | `guest/auto_scenario.py` (baseline) or the scenario prompt in `audit` | No |
+| Runtime phase | `phase` in `guest/dynamic.sh`, mode in `guest/netmode.sh`, phase list in `guest/analyze_dynamic.py` | No |
+| Report format, verdict rubric | `.claude/skills/audit/SKILL.md` | No |
+| README graphics | `docs/assets/generate.py`, then run it | No |
+
+After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with decoy reads, refused exfil hosts,
+`.bashrc` persistence, a leftover process, direct egress and the `macOS SPOOF` section all present.
+
+### Troubleshooting
+| Symptom | Fix |
+|---|---|
+| `limactl list` shows VMs as Broken / "operation not permitted" inside Claude Code | Sandbox side effect: run it with the sandbox disabled. The VMs are fine |
+| VM start right after a stop times out | `audit.sh run` retries once; re-run the step if it still fails |
+| Leftover `aud-*` VMs after an interrupted run | `./audit.sh destroy <id>` or `limactl delete -f aud-xxxxxxx` |
+| `osv exit 128` in the static log | No lockfile found; see [#3](https://github.com/dl-portfolio/plugin-audit/issues/3) for when that is wrong |
+| No report written | Results are in `work/<id>/`; run `/audit <id>` in Claude Code |
+| "Files hidden by deny rules" in a report | `./audit.sh copies <id>`, then `/audit <id>` |
+| Install fails for an environment reason (Docker, Rust) | Fix `work/<id>/scenario/install.sh` and `./audit.sh run <id>`, or accept it as static-only |
+
+### Limits
+| Limit | Impact | Tracked |
+|---|---|---|
+| Linux VM | Native Mac code is caught statically only | [#6](https://github.com/dl-portfolio/plugin-audit/issues/6) |
+| Evasion | VM-aware or delayed malware may stay quiet; a clean run is evidence, not proof | — |
+| HTTPS | We see which hosts, not what was sent | — |
+| No Docker, GUI or Rust in the VM | Those parts are reviewed statically | — |
+| Prompt-only skills | Never executed; reviewed by reading | [#5](https://github.com/dl-portfolio/plugin-audit/issues/5) |
+| Deny rules | Some target files may be unread by the reviewer | `./audit.sh copies` |
+
+### Repository layout
 | Path | Role | Runs where |
 |---|---|---|
-| `audit` | one-command entry point: setup, `new`, headless scenario, `run`, `destroy`, headless review | Mac |
-| `audit.sh` | step orchestrator (`base`, `new`, `run`, `copies`, `destroy`); copies `guest/*` into each VM | Mac |
-| `vm/audit-base.yaml` | Lima template (image pinned by digest, plain mode, no mounts) | Mac → Lima |
-| `vm/provision.sh` | one-time VM build: toolchains, scanners, DNS/proxy/firewall, users, decoys | VM (root, base only) |
-| `guest/fetch.sh` | downloads the target inside the VM | VM (root) |
-| `guest/static.sh`, `claude_checks.py`, `summarize_static.py`, `no-bytecode.yaml` | static scan and summary | VM (`auditor`) |
-| `guest/auto_scenario.py` | default runtime scenario from manifests | VM (`auditor`) |
-| `guest/dynamic.sh`, `netmode.sh` | runtime phases, network modes | VM (root; target as `sandbox`) |
-| `guest/mcp_probe.py`, `fire_hooks.py` | exercise MCP servers and Claude hooks | VM (`sandbox`) |
-| `guest/darwin_preload.js`, `darwin_sitecustomize.py`, `macstub.sh` | macOS impersonation for run-darwin | VM (`sandbox`) |
-| `guest/analyze_dynamic.py` | runtime logs → `dynamic-summary.txt` | VM (root) |
-| `.claude/skills/audit/SKILL.md` | the `/audit` skill: steps, rules, verdict rubric, report template | Claude Code |
-| `tests/fixture-malicious/` | positive control | VM only |
-| `scanner-vetting.md` | why each third-party scanner was trusted, and at which commit | docs |
-| `reports/` | written reports + index | docs |
-| `docs/assets/` | README graphics (hand-written SVG, no third-party icons) | docs |
-| `LICENSE`, `NOTICE` | Apache-2.0 and copyright | docs |
+| `audit` | One-command entry point | Host |
+| `audit.sh` | Steps: `base`, `new`, `run`, `copies`, `destroy` | Host |
+| `vm/` | Base VM template and one-time provisioning | Host → VM |
+| `guest/static.sh`, `claude_checks.py`, `summarize_static.py` | Static scan | VM (`auditor`) |
+| `guest/auto_scenario.py` | Baseline scenario | VM (`auditor`) |
+| `guest/dynamic.sh`, `netmode.sh`, `analyze_dynamic.py` | Runtime phases, network modes, summary | VM (root; target as `sandbox`) |
+| `guest/mcp_probe.py`, `fire_hooks.py` | Exercise MCP servers and Claude hooks | VM (`sandbox`) |
+| `guest/darwin_preload.js`, `darwin_sitecustomize.py`, `macstub.sh` | macOS impersonation | VM (`sandbox`) |
+| `.claude/skills/audit/SKILL.md` | `/audit` skill: steps, rules, rubric, report template | Claude Code |
+| `tests/fixture-malicious/` | Positive control | VM only |
+| `scanner-vetting.md` | Why each scanner is trusted | Docs |
+| `reports/` | Reports and index (tool output) | Docs |
+| `docs/assets/` | README graphics and their generator | Docs |
 
-## Extending it
-**Before you edit:** never change `audit`, `audit.sh` or `guest/` while an audit runs (bash reads scripts as it runs;
-check `limactl list` for `aud-*` VMs). Files in `guest/` are copied into every VM on `new` and `run`, so changes there
-need no rebuild. Only `vm/*` changes need `./audit.sh base`.
+## 📄 License
+[Apache License 2.0](LICENSE). Copyright 2026 Daniel Lennart ([NOTICE](NOTICE)).
 
-**After you edit:** run `./audit tests/fixture-malicious`. It must come out DO NOT USE, and `dynamic-summary.txt`
-must show the decoy reads, refused exfil hosts, `.bashrc` persistence, the leftover process, direct egress, and the
-`macOS SPOOF` section. Add a fixture line for every new behaviour you detect.
-
-Common changes:
-- **A static rule:** add a `(severity, category, regex, detail, 'code' | None)` tuple to `LINE_RULES` in
-  `guest/claude_checks.py` (`'code'` = only in code files, not docs). Severities `info` stay in the JSON only.
-  It is stdlib-only and only reads files, so you can try it on the fixture locally:
-  `python3 -I guest/claude_checks.py tests/fixture-malicious /tmp/cc.json`. Check new rules against a few earlier
-  `work/*/src` for noise.
-- **A decoy:** permanent ones via `decoy` in `vm/provision.sh` (rebuild); per-run ones in `guest/dynamic.sh`
-  (appended to `extra-decoys.txt`, no rebuild; Mac-path ones via `macdecoy`). Which reads count as strong or expected
-  for a tool: `STRONG_DECOY` and `EXPECTED_READERS` in `guest/analyze_dynamic.py`.
-- **A package registry for the install phase:** the allowlist in `vm/provision.sh` (`/etc/tinyproxy/allow.txt`; rebuild).
-- **A toolchain or scanner version:** `dl <url> <sha256>` or `gh_src <owner/repo> <commit>` in `vm/provision.sh`;
-  keep versions at least two weeks old; record scanner vetting in `scanner-vetting.md`; rebuild.
-- **Scenario coverage:** a new ecosystem in `guest/auto_scenario.py` (it only writes shell lines, never runs the
-  target), or adjust the headless scenario prompt in `audit`.
-- **A runtime phase:** `phase <name> <netmode> <timeout> [scenario-script] [extra env]` in `guest/dynamic.sh`, a mode
-  in `guest/netmode.sh` if it needs different network rules, and the phase name in `analyze()` of
-  `guest/analyze_dynamic.py` (`run-darwin` is a worked example).
-- **Report format or verdict rubric:** `.claude/skills/audit/SKILL.md` (used by both `/audit` and `./audit`).
-
-## Troubleshooting
-- **`limactl list` shows instances as Broken / "operation not permitted"** when run from a sandboxed Claude Code
-  Bash call: run it with the sandbox disabled. The VMs are fine.
-- **A VM start right after a stop times out:** `audit.sh run` retries once; if it still fails, re-run the step.
-- **Leftover VMs** (`aud-*` in `limactl list`) after an interrupted run: `./audit.sh destroy <id>` or
-  `limactl delete -f aud-xxxxxxx`.
-- **`osv exit 128`** in the static log means the target has no lockfile; nothing to fix.
-- **No report written** (`claude` missing, a usage limit hit, or the call failed): the results are in `work/<id>/`;
-  open Claude Code here and run `/audit <id>`.
-- **"Not covered: files hidden by deny rules"** in a report: run `./audit.sh copies <id>`, then `/audit <id>`.
-- **Install phase fails for an environment reason** (missing toolchain, Docker, Rust): fix
-  `work/<id>/scenario/install.sh` once and `./audit.sh run <id>`, or accept that part as static-only.
-
-## Limits
-Say these in every report:
-- **Linux VM:** macOS-only behaviour is caught by static rules and, for JS/TS/Python, by the run-darwin phase. Native
-  binaries and malware that checks deeper (kernel, `/System`, real Keychain APIs) still see or reveal Linux; a real
-  macOS guest is roadmap item 2c.
-- **Evasion:** malware can detect VMs or wait; a clean runtime run is evidence, not proof. Static red flags stand.
-- **HTTPS content isn't inspected:** we see which hosts, not what was sent.
-- **No Docker, GUI or Rust in the VM:** such parts are reviewed statically only.
-- **Deny rules:** files named `secrets*`, `credentials*`, `.env*` may be unread by the reviewer (VM scanners still
-  cover them) unless you run `./audit.sh copies <id>`.
-- **Prompt-only skills** (instructions with no code) never execute: the runtime test cannot show what an agent does
-  when it follows them. Static review and the reviewer's reading cover them; see roadmap item 1.
-
-## Roadmap
-Designed, not built. 2a and 2b below are done (static Mac rules, run-darwin phase). Suggested next: **1 with a local
-model**, the capped Claude key only as an opt-in, **2c** only by hand for a macOS-native, high-risk target.
-
-### 1. Run prompt-only skills through an agent
-**Goal.** See what a skill makes an agent *do*: which files it reads, which commands it runs, which hosts it tries,
-whether it touches the decoys or edits agent config. Today that is inferred from reading the SKILL.md.
-
-**Common part.** `vm/provision.sh` installs a pinned Claude Code (npm, ≥ 2 weeks old) into `audit-base`
-(needs `./audit.sh base`). A new phase `agent` in `guest/dynamic.sh` runs after `run`, with the same
-strace/inotify/decoys/persistence diff. As `sandbox`, in a scratch project with the target's skill(s) copied into
-`.claude/skills/` (plugins: `--plugin-dir`), for each of 2-3 tasks:
-`timeout 300 claude -p "<task>" --permission-mode bypassPermissions --max-turns 25 --output-format stream-json`.
-Bypass is deliberate: we want to see what the skill gets the agent to do, and the VM is the boundary. The tasks
-come from `scenario/agent-tasks.txt`, which the host-side scenario step also writes (realistic requests that
-should trigger the skill, with harmless sample inputs); the fallback is one generic task per skill ("Use the <name>
-skill on the files in this folder"). `analyze_dynamic.py` adds the transcript's tool calls to the summary.
-`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` keeps Claude Code's own traffic to model calls only.
-
-**Default: a local model on the Mac (no key, no cost).**
-- *Server.* Ollama documents an Anthropic-compatible `/v1/messages` (streaming and tool calling; tool-choice
-  controls only partly) and a Claude Code integration. llama.cpp's `llama-server` lists Anthropic Messages API
-  compatibility in its README. LM Studio and a LiteLLM shim are unverified. Before relying on one: a smoke test where
-  Claude Code in the VM finishes a task that needs Read, Write and Bash.
-- *Model.* Tool-capable and coding-tuned, e.g. Qwen3-Coder-30B-A3B (~18-20 GB at 4-bit) or gpt-oss-20b (~13 GB);
-  a 48 GB Mac fits either. Claude Code's system prompt and tool list are large, so give the server a ≥ 64k context.
-- *VM side.* `ANTHROPIC_BASE_URL=http://<host-ip>:<port>`, `ANTHROPIC_AUTH_TOKEN=dummy`, `--model <local name>`.
-- *Network.* New netmode `agent`: DNS answers NXDOMAIN to everything (the host is reached by IP); tinyproxy runs
-  with `FilterURLs On` and allows only `http://<host-ip>:<port>/v1/messages` (and `/v1/messages/count_tokens`).
-  Plain HTTP, so the proxy sees the path. That refuses and logs model pull/create/push/delete/copy (Ollama `/api/*`),
-  llama.cpp `/slots`, `/props` and everything else; the VM code is hostile and must not reach those. nftables is
-  unchanged: `sandbox` still only reaches loopback.
-- *Mac side.* Bind the server to the address the VM uses for the host, not `0.0.0.0` (or keep it on 127.0.0.1
-  behind a small host relay that forwards only `POST /v1/messages`), so the LAN can't reach it. Never start
-  `llama-server` with `--tools`/`--agent` (they expose file read/write and shell to API callers) or
-  `--slot-save-path`. Ollama has no auth: the path allowlist is what keeps VM code off its admin API.
-- *Trade-offs.* No real key, no cost, no subscription usage, and nothing leaves the Mac. But fidelity differs:
-  injection text tuned for Claude may not fire on Qwen/gpt-oss, and small models over-comply (false alarms) or fail
-  to use tools (false clean). So a local run that does something bad is strong evidence; a clean one is weak. Local
-  inference adds roughly 10-20 min per audit and needs the RAM free during the batch.
-
-**Opt-in for high-risk skills: Claude through a dedicated, capped key.** Same phase; netmode allows only
-`api.anthropic.com`; `--model claude-sonnet-5-5`. The key is copied into the VM only for that phase (a 0600 file read
-as root and handed to `claude` through its environment, never a command line), deleted when the phase ends, and its
-value is stripped from all output before it leaves the VM.
-- *Risk of a real key in a hostile VM.* The target runs in the same VM, as the same user, while the key is live.
-  Assume a malicious skill or script **can read and exfiltrate the key**: the proxy allows only
-  `api.anthropic.com`, but the key is the payload, and it can be smuggled out inside an API request or prompt.
-  Limits: a dedicated Console **workspace** with a monthly **spend limit** (e.g. $40) and the key scoped to it, so a
-  stolen key can burn at most the cap and sees no other workspace; one key per batch, revoked afterwards; spend
-  alerts on; `--max-turns` and `timeout` bound one audit even if the skill loops. Not limited: the cap can be burned
-  within a cycle, and whatever the agent reads goes to Anthropic under that workspace (decoys are fake).
-- *Cost per audit (estimate, not measured)* (Sonnet 5.5: $2 input / $10 output per MTok, cache reads $0.20). One
-  task ≈ 10-20 turns, ≈ 0.3-0.6M input tokens mostly from cache, ≈ 50-80k cache writes, ≈ 10-20k output tokens: about
-  **$0.25-0.60 per task, $1-2 per audit** with 3 tasks, on top of the ~$2 per audit measured above. Haiku 5.5 ~10×
-  cheaper but less like a real user's agent; Opus 5.5 ~2× Sonnet. If every skill audit used it (~half of ~9 a week),
-  roughly $25-35 a month, hence a $40 cap. As an opt-in for a few high-risk skills, a few dollars a month.
-
-### 2. macOS coverage (the VM is Linux), cheapest first
-**(a) Mac-specific static rules: built.** On top of the Keychain/`osascript`/LaunchAgents/TCC/Gatekeeper rules:
-`dscl . -authonly`, Keychain unlock/tamper and `chainbreaker`, "Chrome Safe Storage"-style keys, browser and wallet
-folders under `~/Library/Application Support`, Safari/Messages/Notes/Telegram data, `curl … | osascript`,
-`screencapture`/`pbpaste`/`hdiutil attach`/`killall Terminal`, and (info, in the JSON only: too common in big apps)
-macOS-only code paths.
-
-**(b) Platform spoofing in the Linux VM: built** as the run-darwin phase (see How it works, step 4). The
-positive-control fixture has a Mac-only stealer branch that only fires under it.
-
-**(c) A real macOS guest VM: possible, but costly.** Lima 2.3 has experimental macOS guest templates (`macos-15`,
-`macos-26`, `macos-27`; vz only; the host must run the same or a newer macOS). Tart is the more established
-alternative. Costs: a full restore image (~15-20 GB) and tens of GB per guest; a slow first install that needs a
-display; clones boot in minutes, not seconds. The whole monitoring kit would be rebuilt for macOS: `eslogger` (root,
-Full Disk Access granted once in the base image) instead of strace, `pf` plus the proxy for the network, decoy items in
-a decoy login keychain, and a LaunchAgents/login-items diff for persistence. Apple's licence allows at most 2 extra
-macOS VMs per Mac, so one audit at a time. Lima's plain mode (no guest agent) is unverified for macOS guests. Days of
-work and a second toolchain to keep current: worth it only for a macOS-native, high-risk target, run by hand rather
-than in a weekly batch.
-
-## License
-[Apache License 2.0](LICENSE). Copyright 2026 Daniel Lennart (see [NOTICE](NOTICE)).
-
-The VM downloads its scanners and toolchains at build time; none are distributed with this repository, and each
-keeps its own licence. One to know about: the [semgrep community rules](https://github.com/semgrep/semgrep-rules)
-are under the Semgrep Rules License, which allows internal use but not offering them as part of a competing hosted
-service. That matters only if you turn this into a service. Reports in `reports/` describe third-party projects at a
-specific commit and are not endorsements or security guarantees.
+Scanners and toolchains are downloaded into the VM at build time and are not distributed here; each keeps its own
+licence. The [semgrep community rules](https://github.com/semgrep/semgrep-rules) are under the Semgrep Rules
+License, which allows internal use but not offering them in a competing hosted service. Reports describe
+third-party projects at one commit; they are not endorsements or security guarantees.

@@ -1,0 +1,53 @@
+# Static checks only. The full pipeline needs a Lima VM on an Apple-silicon Mac,
+# so the positive-control audit (tests/fixture-malicious) is run locally after
+# every pipeline change, not here.
+#
+# Same supply-chain rules as the tool itself: actions pinned to a commit SHA,
+# every download pinned to a version and checked against a sha256, read-only token.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        run: shellcheck --version && shellcheck -S warning audit audit.sh guest/*.sh vm/provision.sh
+
+      - name: python (pyflakes-class errors + syntax)
+        run: pipx run 'ruff==0.8.6' check --select F,E9 guest docs/assets/generate.py
+
+      - name: javascript syntax
+        run: for f in guest/*.js tests/fixture-malicious/*.js; do node --check "$f"; done
+
+  secrets:
+    runs-on: ubuntu-24.04
+    env:
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: install gitleaks (pinned, checksum-verified)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSLo "$tarball" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+
+      - name: scan full history (decoys allowlisted in .gitleaksignore)
+        run: ./gitleaks git . --redact --no-banner --exit-code 1

@@ -5,7 +5,7 @@ python3 -I analyze_dynamic.py snapshot <out.json>   # persistence-relevant file 
 python3 -I analyze_dynamic.py analyze <dynamic_out_dir>  # writes dynamic.json, prints summary
 """
 import hashlib, json, os, re, sys
-from collections import Counter, defaultdict
+from collections import Counter
 
 HOME = '/home/sandbox'
 MACHOME = '/Users/sandbox'   # run-darwin phase
@@ -70,7 +70,6 @@ def parse_strace(path):
     res = {'execs': [], 'exec_counter': Counter(), 'opens': [], 'connects': [], 'deletes': []}
     comm = {}
     try:
-        import io
         if path.endswith('.zst'):
             return res
         fh = open(path, errors='replace')
@@ -275,7 +274,7 @@ def analyze(o):
         P(f"  DECOY CREDENTIAL READS: {len(r['decoy_hits'])} total, {len(strong)} unexpected/strong")
         for d in r['decoy_hits'][:30]:
             P(f"    {'!!' if (d['strong'] or not d['expected']) else 'ok'} {d['process']} -> {d['path']} ({'expected for this tool' if d['expected'] else 'NOT expected'})")
-        P(f"  home reads outside project/caches: " + ('; '.join(f"{x['process']}:{x['path']}x{x['count']}" for x in r['home_reads_outside_project'][:25]) or 'none'))
+        P("  home reads outside project/caches: " + ('; '.join(f"{x['process']}:{x['path']}x{x['count']}" for x in r['home_reads_outside_project'][:25]) or 'none'))
         P(f"  sensitive system reads: {r['sensitive_system_reads'][:10] or 'none'}")
         P(f"  proxy ALLOWED hosts: {r['proxy_allowed_hosts'] or 'none'}")
         P(f"  proxy REFUSED hosts (tool wanted these): {r['proxy_refused_hosts'] or 'none'}")
@@ -285,7 +284,7 @@ def analyze(o):
         P(f"  deletes/renames outside project: {r['deletes_outside_project'][:15] or 'none'}")
         P(f"  processes left running after phase: {r['leftover_processes'] or 'none'}")
         if ph == 'run-darwin':
-            P(f"  macOS tool calls (answered by stand-ins with decoy values): " + ('; '.join(r['macos_tool_calls'][:25]) or 'none'))
+            P("  macOS tool calls (answered by stand-ins with decoy values): " + ('; '.join(r['macos_tool_calls'][:25]) or 'none'))
     # what only showed up when the code believed it was on a Mac
     if 'run-darwin' in out['phases'] and 'run' in out['phases']:
         a, b = out['phases']['run'], out['phases']['run-darwin']
@@ -308,7 +307,7 @@ def analyze(o):
             P('    ' + l[:300])
         json.dump(out, open(f'{o}/dynamic.json', 'w'), indent=1)
     pz = out['persistence']
-    P(f"== PERSISTENCE / FILE CHANGES OUTSIDE PROJECT")
+    P("== PERSISTENCE / FILE CHANGES OUTSIDE PROJECT")
     if 'error' in pz:
         P(f"  error {pz['error']}")
     else:

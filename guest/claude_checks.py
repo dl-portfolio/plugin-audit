@@ -218,7 +218,6 @@ def load_json(p):
 
 def check_special(path, full, name, text):
     low = name.lower()
-    d = os.path.dirname(path)
     # ---- Claude artifacts
     if name == 'SKILL.md':
         artifacts['skills'].append(path)

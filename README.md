@@ -4,6 +4,7 @@
 </picture>
 
 <p align="center">
+  <a href="https://github.com/dl-portfolio/plugin-audit/actions/workflows/ci.yml"><img src="https://github.com/dl-portfolio/plugin-audit/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="LICENSE"><img src="docs/assets/badges/license.svg" alt="License: Apache-2.0"></a>
   <img src="docs/assets/badges/host.svg" alt="Host: macOS on Apple silicon">
   <img src="docs/assets/badges/sandbox.svg" alt="Sandbox: Lima VM, Ubuntu 24.04">
@@ -46,7 +47,9 @@ network.
 | Reviewer manipulation | Text telling the AI reviewer the code is safe | Aimed at the auditor, not the user |
 | Silent updates | Marketplaces install from `main` | Yesterday's review covers a different commit |
 
-This project is the gate I put in front of my own machine.
+This project is the gate I put in front of my own machine. Most agent-extension scanners read the code and tool
+descriptions; plugin-audit also **detonates** the extension: it installs and runs it the way a user would, in a VM
+full of decoy credentials with the network sinkholed, and reports what it actually touched and who it tried to call.
 
 ## ✨ Highlights
 | | Capability | What it means |
@@ -192,6 +195,12 @@ macOS-only branch, which only the run-darwin phase triggers.
 > [!NOTE]
 > Reports are tool output and are not hand-edited. A clearer report format (so-what per finding, plain "what we
 > tested") is tracked in [#1](https://github.com/dl-portfolio/plugin-audit/issues/1).
+
+> [!IMPORTANT]
+> **Disclosure policy.** Risky defaults and documented behaviour are published as found. A security bug in a
+> third-party project (for example path traversal, or an admin account anyone on the network can claim) is reported
+> privately to its maintainers first. Its report is published once a fix ships, or 90 days after the report,
+> whichever comes first. Maintainers who disagree with a finding can open an issue here.
 
 ## 🔐 Trust model
 | Component | Can | Cannot |

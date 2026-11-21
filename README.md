@@ -197,10 +197,7 @@ macOS-only branch, which only the run-darwin phase triggers.
 > tested") is tracked in [#1](https://github.com/dl-portfolio/plugin-audit/issues/1).
 
 > [!IMPORTANT]
-> **Disclosure policy.** Risky defaults and documented behaviour are published as found. A security bug in a
-> third-party project (for example path traversal, or an admin account anyone on the network can claim) is reported
-> privately to its maintainers first. Its report is published once a fix ships, or 90 days after the report,
-> whichever comes first. Maintainers who disagree with a finding can open an issue here.
+> Maintainers who disagree with a finding, or have fixed it, can open an issue here and the tool will be re-audited.
 
 ## 🔐 Trust model
 | Component | Can | Cannot |

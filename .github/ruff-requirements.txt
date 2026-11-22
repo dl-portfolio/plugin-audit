@@ -1,0 +1,8 @@
+# ruff for CI (and local use), pinned by version and wheel sha256; install with
+#   pip install --require-hashes --only-binary :all: --no-deps -r .github/ruff-requirements.txt
+# Updated by hand, like the scanner pins: a release at least 2 weeks old (see scanner-vetting.md).
+# Hashes: Linux x86_64 and aarch64 (CI runners), macOS arm64.
+ruff==0.8.6 \
+    --hash=sha256:7ae4478b1471fc0c44ed52a6fb787e641a2ac58b1c1f91763bafbc2faddc5117 \
+    --hash=sha256:0509e8da430228236a18a677fcdb0c1f102dd26d5520f71f79b094963322ed25 \
+    --hash=sha256:e88b8f6d901477c41559ba540beeb5a671e14cd29ebd5683903572f4b40a9807

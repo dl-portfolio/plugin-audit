@@ -369,7 +369,8 @@ the VM; `./audit` deletes it at the end).
 | README graphics | `docs/assets/generate.py`, then run it | No |
 
 After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with decoy reads, refused exfil hosts,
-`.bashrc` persistence, a leftover process, direct egress and the `macOS SPOOF` section all present.
+`.bashrc` persistence, a leftover process, direct egress and the `macOS SPOOF` section all present. CI runs only the
+VM-free part: `python3 -I tests/static_selftest.py` (our static checks and the baseline scenario must flag the fixture).
 
 ### Troubleshooting
 | Symptom | Fix |
@@ -406,8 +407,8 @@ After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with de
 | `guest/mcp_probe.py`, `fire_hooks.py` | Exercise MCP servers and Claude hooks | VM (`sandbox`) |
 | `guest/darwin_preload.js`, `darwin_sitecustomize.py`, `macstub.sh` | macOS impersonation | VM (`sandbox`) |
 | `.claude/skills/audit/SKILL.md` | `/audit` skill: steps, rules, rubric, report template | Claude Code |
-| `tests/fixture-malicious/` | Positive control | VM only |
 | `.claude/agents/audit-reviewer.md` | `/audit` review subagent, limited to Read, Grep and Glob | Claude Code |
+| `tests/fixture-malicious/` | Positive control | VM only |
 | `scanner-vetting.md` | Why each scanner is trusted | Docs |
 | `reports/` | Reports and index (tool output) | Docs |
 | `docs/assets/` | README graphics and their generator | Docs |

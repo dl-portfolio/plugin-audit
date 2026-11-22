@@ -8,7 +8,8 @@ Thanks for looking. A few rules keep the auditor trustworthy:
 - **Run the positive control** after any change to `audit`, `audit.sh`, `guest/`, `host/` or `vm/`:
   `./audit tests/fixture-malicious` must still come out ⛔ DO NOT USE with decoy reads, refused exfil hosts,
   persistence, a leftover process and the `macOS SPOOF` section. Say in the PR that you ran it.
-- **CI must pass:** shellcheck, ruff and gitleaks (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+- **CI must pass:** shellcheck, ruff, gitleaks and the VM-free fixture check `python3 -I tests/static_selftest.py`
+  (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 - **Reports are tool output.** Don't hand-edit verdicts; re-run the audit or open a
   [dispute / re-audit issue](https://github.com/dl-portfolio/plugin-audit/issues/new?template=dispute-finding.yml).
 

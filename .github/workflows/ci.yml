@@ -1,9 +1,11 @@
-# Static checks only. The full pipeline needs a Lima VM on an Apple-silicon Mac,
-# so the positive-control audit (tests/fixture-malicious) is run locally after
-# every pipeline change, not here.
+# No VM here: the full pipeline needs a Lima VM on an Apple-silicon Mac, so the
+# positive-control audit (./audit tests/fixture-malicious) is run locally after
+# every pipeline change. CI runs the static parts: linters, a secret scan, and the
+# guest's own static checks and baseline scenario against the fixture (as data).
 #
 # Same supply-chain rules as the tool itself: actions pinned to a commit SHA,
-# every download pinned to a version and checked against a sha256, read-only token.
+# every download pinned to a version and checked against a sha256 (ruff via
+# .github/ruff-requirements.txt, --require-hashes), read-only token.
 name: ci
 
 on:
@@ -17,6 +19,7 @@ permissions:
 jobs:
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -25,14 +28,32 @@ jobs:
       - name: shellcheck
         run: shellcheck --version && shellcheck -S warning audit audit.sh guest/*.sh vm/provision.sh
 
+      - name: install ruff (pinned, hash-checked)
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ruff"
+          "$RUNNER_TEMP/ruff/bin/pip" install --quiet --require-hashes --only-binary :all: --no-deps \
+            -r .github/ruff-requirements.txt
+
       - name: python (pyflakes-class errors + syntax)
-        run: pipx run 'ruff==0.8.6' check --select F,E9 guest host docs/assets/generate.py
+        run: '"$RUNNER_TEMP/ruff/bin/ruff" check --select F,E9 guest host tests docs/assets/generate.py'
 
       - name: javascript syntax
         run: for f in guest/*.js tests/fixture-malicious/*.js; do node --check "$f"; done
 
+  selftest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: static checks + baseline scenario flag the positive-control fixture
+        run: python3 -I tests/static_selftest.py
+
   secrets:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       GITLEAKS_VERSION: 8.30.1
       GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb

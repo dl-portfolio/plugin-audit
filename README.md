@@ -157,7 +157,7 @@ What a malicious extension could try, mapped to [MITRE ATT&CK](https://attack.mi
 | Obfuscated payloads | T1027 | — | Static rules for decoded execution, large base64 blobs; five scanners | — |
 | Skill or tool text that steers the agent | — | AML.T0051.001, AML.T0080, AML.T0053 · LLM01, LLM06, ASI01, ASI02, ASI06 | Static injection rules; reviewer reads every SKILL.md; agent-steering is a finding | Prompt-only skills never execute ([#5](https://github.com/dl-portfolio/plugin-audit/issues/5)) |
 | Injection aimed at the reviewer or scenario writer | — | AML.T0051.001 · LLM01 | LLMs confined to `work/<id>/`: no shell/network, no reads elsewhere, output-only writes; secrets/host-path check before publishing; planted text is reported | A fooled reviewer can misjudge severity |
-| Rug pull after review | — | AML.T0109 · ASI04 | Verdict pinned to a commit; unpinned installs flagged | Re-audit before every update |
+| Rug pull after review | — | AML.T0109 · ASI04 | Verdict pinned to a commit; unpinned installs flagged; each MCP server's tool manifest saved with its sha256, re-listed after the tool calls and on `list_changed`, and diffed against the previous audit | Re-audit before every update; a server can still change after the audit |
 | Compromised scanner or toolchain | T1195.001 | LLM03 | Vetted, pinned by version + sha256 (scanner archives and semgrep's dependencies included), ≥ 2 weeks old, run without network; killed before export | The OSV database is a live feed by design |
 | Attack on the host through the pipeline (archives, symlinks, git) | — | — | Unpacked inside the VM; exported from a folder only root can write, after scanners are killed; symlinks stripped in the VM and again on the host; git never parses the target on the host; target and ref validated and quoted before reaching the VM's root shell | — |
 
@@ -244,6 +244,7 @@ Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issu
 | Mac-specific static rules | ✅ Done | Keychain, browser/wallet folders, `dscl -authonly`, fake password dialogs | — |
 | macOS impersonation (run-darwin) | ✅ Done | Mac-only stealer branches run in the Linux VM | — |
 | Tailored scenario + bundled skill scripts | ✅ Done | The product itself runs, not just `--help` | — |
+| MCP manifest pinning and rug-pull diff | ✅ Done | Tools that change mid-session or between audits show up in the report | [#12](https://github.com/dl-portfolio/plugin-audit/issues/12) |
 | Fix osv-scanner gap; scan repos without lockfiles | 🐛 Bug | The known-malicious-package check silently skipped one target | [#3](https://github.com/dl-portfolio/plugin-audit/issues/3) |
 | Clearer report format | 📋 Planned | So-what per finding, plain "what we tested" | [#1](https://github.com/dl-portfolio/plugin-audit/issues/1) |
 | Re-audit with tailored scenarios | 📋 Planned | Earlier reports never ran the product | [#2](https://github.com/dl-portfolio/plugin-audit/issues/2) |
@@ -346,6 +347,8 @@ The **ID** is `<name>-<first 7 chars of the commit>`. A verdict is valid for tha
 | `scenario/install.sh`, `run.sh`, `notes.txt` | Tailored or hand-written scenario (runs after the baseline) |
 | `report.md`, `index-row.md` | Reviewer output before `host/publish_report.py` copies it to `reports/` |
 | `dynamic/dynamic-summary.txt` | What happened at runtime, per phase; logs alongside |
+| `dynamic/mcp/<phase>/<server>.json` | Each probed MCP server's manifest (tools, prompts, resources) as canonical JSON with its sha256, re-listings and `list_changed` notices; `dynamic/mcp-diff.json` diffs it against the previous audit of the same target |
+| `mcp-previous/` | The manifests of the previous `audit.sh run` of this audit (baseline for the diff) |
 
 To change the scenario: edit `work/<id>/scenario/*.sh`, then `./audit.sh run <id>` (after `./audit.sh new`, which keeps
 the VM; `./audit` deletes it at the end).
@@ -364,13 +367,15 @@ the VM; `./audit` deletes it at the end).
 | Package registry allowlist | `/etc/tinyproxy/allow.txt` in `vm/provision.sh` | Yes |
 | Tool or scanner version | `dl` / `gh_src` in `vm/provision.sh`; record vetting in `scanner-vetting.md` | Yes |
 | Scenario coverage | `guest/auto_scenario.py` (baseline) or the scenario prompt in `audit` | No |
+| MCP probe, manifest format and diff | `guest/mcp_probe.py` (also the library `analyze_dynamic.py` and `host/mcp_diff.py` load), `host/mcp_diff.py` | No |
 | Runtime phase | `phase` in `guest/dynamic.sh`, mode in `guest/netmode.sh`, phase list in `guest/analyze_dynamic.py` | No |
 | Report format, verdict rubric | `.claude/skills/audit/SKILL.md` | No |
 | README graphics | `docs/assets/generate.py`, then run it | No |
 
 After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with decoy reads, refused exfil hosts,
 `.bashrc` persistence, a leftover process, direct egress and the `macOS SPOOF` section all present. CI runs only the
-VM-free part: `python3 -I tests/static_selftest.py` (our static checks and the baseline scenario must flag the fixture).
+VM-free part: `python3 -I tests/static_selftest.py` (our static checks and the baseline scenario must flag the fixture)
+and the unit tests (`for t in tests/test_*.py; do python3 -I "$t"; done`).
 
 ### Troubleshooting
 | Symptom | Fix |
@@ -404,11 +409,13 @@ VM-free part: `python3 -I tests/static_selftest.py` (our static checks and the b
 | `guest/static.sh`, `claude_checks.py`, `summarize_static.py` | Static scan | VM (`auditor`) |
 | `guest/auto_scenario.py` | Baseline scenario | VM (`auditor`) |
 | `guest/dynamic.sh`, `netmode.sh`, `analyze_dynamic.py` | Runtime phases, network modes, summary | VM (root; target as `sandbox`) |
-| `guest/mcp_probe.py`, `fire_hooks.py` | Exercise MCP servers and Claude hooks | VM (`sandbox`) |
+| `guest/mcp_probe.py`, `fire_hooks.py` | Exercise MCP servers (saving each manifest with its sha256) and Claude hooks | VM (`sandbox`) |
+| `host/mcp_diff.py` | Diffs MCP manifests against the previous audit of the same target; appended to the runtime summary | Host |
 | `guest/darwin_preload.js`, `darwin_sitecustomize.py`, `macstub.sh` | macOS impersonation | VM (`sandbox`) |
 | `.claude/skills/audit/SKILL.md` | `/audit` skill: steps, rules, rubric, report template | Claude Code |
 | `.claude/agents/audit-reviewer.md` | `/audit` review subagent, limited to Read, Grep and Glob | Claude Code |
 | `tests/fixture-malicious/` | Positive control | VM only |
+| `tests/test_*.py` | VM-free unit tests (run in CI) | Host / CI |
 | `scanner-vetting.md` | Why each scanner is trusted | Docs |
 | `reports/` | Reports and index (tool output) | Docs |
 | `docs/assets/` | README graphics and their generator | Docs |

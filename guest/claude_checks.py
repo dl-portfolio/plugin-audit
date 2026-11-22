@@ -112,7 +112,9 @@ AI_TEXT_RULES = [
     ('high', 'prompt-injection', R(r'(security )?(reviewer|auditor|scanner|ai model|language model|assistant)s?[,:]? (should|must|please)'), 'text addressed to an AI reviewer'),
     ('medium', 'prompt-injection', R(r'you are now|new instructions|system prompt|<\s*/?\s*(system|instructions?)\s*>'), 'role/system-prompt manipulation'),
 ]
-HIDDEN_UNI = re.compile('[\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\u180E]')
+# Invisible or text-hiding characters: ANSI escape (ESC starts terminal sequences that hide or overwrite text),
+# Unicode tags, bidi controls, zero-width characters. Keep in sync with HIDDEN_UNI in mcp_probe.py.
+HIDDEN_UNI = re.compile('[\x1b\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\u180E]')
 URL_RE = re.compile(r'(?:https?|wss?)://([A-Za-z0-9.-]+\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?')
 B64_RE = re.compile(r'[A-Za-z0-9+/]{400,}={0,2}')
 BORING_HOSTS = re.compile(r'(^|\.)(example\.(com|org|net)|localhost|w3\.org|schema\.org|json-schema\.org|opensource\.org|apache\.org|mozilla\.org|shields\.io|img\.shields\.io)$')
@@ -310,6 +312,10 @@ def check_special(path, full, name, text):
         add('low', 'install-hook', path, None, '', 'go:generate directives (run only with go generate)')
 
 
+def order_of(sev):
+    return ('critical', 'high', 'medium', 'low', 'info').index(sev)
+
+
 def is_binary_head(b):
     return b[:4] in (b'\x7fELF', b'\xcf\xfa\xed\xfe', b'\xca\xfe\xba\xbe', b'\xfe\xed\xfa\xcf') or b[:2] == b'MZ' or b'\x00' in b[:1024]
 
@@ -365,12 +371,20 @@ for root, dirs, files in os.walk(SRC, followlinks=False):
         is_code = ext in CODE_EXT or head.startswith(b'#!') or name in ('Makefile', 'Dockerfile')
         check_line_rules(path, text, is_code)
         check_special(path, full, name, text)
+        worst = None   # one finding per file: its most severe hidden character (first one of that severity)
         for m in HIDDEN_UNI.finditer(text):
+            o = ord(m.group())
+            sev = 'critical' if 0xE0000 <= o <= 0xE007F else ('high' if 0x202A <= o <= 0x2069 or o == 0x1B else 'medium')
+            if worst is None or order_of(sev) < order_of(worst[0]):
+                worst = (sev, m)
+                if sev == 'critical':
+                    break
+        if worst:
+            sev, m = worst
             ln = text.count('\n', 0, m.start()) + 1
-            cp = f'U+{ord(m.group()):04X}'
-            sev = 'critical' if 0xE0000 <= ord(m.group()) <= 0xE007F else ('high' if 0x202A <= ord(m.group()) <= 0x2069 else 'medium')
-            add(sev, 'hidden-unicode', path, ln, cp, 'invisible/bidi character (can hide text from humans but not from AI)')
-            break
+            detail = ('ANSI escape character (can hide or overwrite text in a terminal)' if m.group() == '\x1b'
+                      else 'invisible/bidi character (can hide text from humans but not from AI)')
+            add(sev, 'hidden-unicode', path, ln, f'U+{ord(m.group()):04X}', detail)
         if is_code and ext in ('.js', '.mjs', '.cjs', '.ts', '.py', '.sh') and not re.search(r'\.min\.|dist/|build/|vendor', path):
             if B64_RE.search(text):
                 add('medium', 'obfuscation', path, None, '', 'long base64 blob in source')

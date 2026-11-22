@@ -4,7 +4,7 @@
 python3 -I analyze_dynamic.py snapshot <out.json>   # persistence-relevant file state
 python3 -I analyze_dynamic.py analyze <dynamic_out_dir>  # writes dynamic.json, prints summary
 """
-import hashlib, json, os, re, sys
+import hashlib, importlib.util, json, os, re, sys
 from collections import Counter
 
 HOME = '/home/sandbox'
@@ -174,6 +174,66 @@ def fw_drops(path):
     return d
 
 
+def probe_lib():
+    """mcp_probe.py (same folder) as a library: python3 -I does not put this folder on sys.path."""
+    sys.dont_write_bytecode = True
+    spec = importlib.util.spec_from_file_location('mcp_probe', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mcp_probe.py'))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def mcp_section(o, out):
+    """What every probed MCP server advertised (manifest sha256), whether it changed mid-session, hidden characters
+    in its tool text, and whether the run and run-darwin phases saw the same manifest."""
+    lib = probe_lib()
+    recs = lib.load_records(os.path.join(o, 'mcp'))
+    lines = []
+    if not recs:
+        return lines
+    lines.append('== MCP MANIFESTS (what each probed server advertised; canonical JSON + sha256 in dynamic/mcp/<phase>/)')
+    summary = {}
+    for ph, servers in recs.items():
+        for key, r in servers.items():
+            m = r['manifest']
+            counts = ', '.join(f'{len(m[k])} {k}' if m.get(k) is not None else f'{k} not listed' for k, _ in lib.KINDS)
+            info = r.get('server_info') if isinstance(r.get('server_info'), dict) else {}
+            lines.append(f'  [{lib.safe(ph, 20)}] {lib.safe(key, 64)}: sha256 {r["sha256"]} · {counts} · server '
+                         f'{lib.safe(info.get("name"), 60)} {lib.safe(info.get("version"), 30)}')
+            notices = r.get('list_changed') if isinstance(r.get('list_changed'), list) else []
+            if notices:
+                lines.append('    list_changed notifications: ' + '; '.join(
+                    f'{lib.safe(n.get("method"), 60)} during {lib.safe(n.get("during"), 80)}' for n in notices[:10] if isinstance(n, dict)))
+            swaps = []
+            for rl in r.get('relists') or []:
+                if not isinstance(rl, dict):
+                    continue
+                d = rl.get('diff') if isinstance(rl.get('diff'), dict) else {}
+                if lib.is_change(d):
+                    swaps.append(rl)
+                    announced = 'announced by list_changed' if 'list_changed' in str(rl.get('reason')) else 'NOT announced'
+                    lines.append(f'    !! MID-SESSION CHANGE ({lib.safe(rl.get("reason"), 80)}; {announced}): sha256 {lib.safe(rl.get("sha256"), 64)}')
+                    lines += lib.describe_diff(d, '      ')
+            if not swaps:
+                lines.append('    re-listed after the session: unchanged')
+            hidden = lib.hidden_chars(m)
+            for rl in swaps:
+                hidden += lib.hidden_chars(rl.get('manifest') if isinstance(rl.get('manifest'), dict) else {})
+            for kind, name, path, cp in sorted(set(hidden))[:20]:
+                lines.append(f'    !! hidden/escape character {cp} in {kind}/{lib.safe(name, 60)} {lib.safe(path, 60)}')
+            summary.setdefault(ph, {})[key] = {'sha256': r['sha256'], 'final_sha256': r.get('final_sha256'),
+                                               'swapped_mid_session': bool(swaps), 'list_changed': len(notices),
+                                               'hidden_chars': len(set(hidden))}
+    if 'run' in recs and 'run-darwin' in recs:
+        for key in sorted(set(recs['run']) & set(recs['run-darwin'])):
+            d = lib.diff_manifests(recs['run'][key]['manifest'], recs['run-darwin'][key]['manifest'])
+            if lib.is_change(d):
+                lines.append(f'  !! {lib.safe(key, 64)}: run-darwin saw a DIFFERENT manifest than run (OS-dependent tools):')
+                lines += lib.describe_diff(d, '    ')
+    out['mcp_manifests'] = summary
+    return lines
+
+
 def analyze(o):
     decoys = load_decoys(o)
     out = {'phases': {}}
@@ -280,6 +340,10 @@ def analyze(o):
     seen = {d['path'] for r in out['phases'].values() for d in r['decoy_hits']}
     touched = {l.split(' ', 2)[-1] for l in ino if re.search(r'\b(OPEN|ACCESS)\b', l.split(' ', 2)[1] if l.count(' ') >= 2 else '')}
     out['decoy_reads_not_in_strace'] = sorted(touched - seen)[:60]
+    try:
+        mcp_lines = mcp_section(o, out)
+    except Exception as e:   # never lose the rest of the summary over this section
+        mcp_lines = [f'== MCP MANIFESTS: error {e}']
     json.dump(out, open(f'{o}/dynamic.json', 'w'), indent=1)
 
     # human summary
@@ -341,6 +405,7 @@ def analyze(o):
     P(f"== DECOY INOTIFY (kernel file events on decoy folders): {len(out['decoy_inotify'])} events")
     for l in out['decoy_inotify'][:20]:
         P('  ' + l)
+    lines += mcp_lines
     print('\n'.join(lines))
 
 

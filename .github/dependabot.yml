@@ -1,0 +1,13 @@
+# Keeps the SHA-pinned actions in ci.yml current. The cooldown matches the project's rule that every pin is at
+# least 2 weeks old (see scanner-vetting.md); scanner and toolchain pins in vm/ are updated by hand after vetting.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 14
+    groups:
+      actions:
+        patterns: ["*"]

@@ -22,6 +22,10 @@ a sandboxed LLM write a report with a verdict: ✅ **SAFE TO USE**, ⚠️ **USE
 ./audit https://github.com/owner/repo
 ```
 
+**See one:** [the positive-control fake stealer](reports/fixture-malicious-4ce4d24.md) (⛔, every signal fires) ·
+[a real ✅ verdict](reports/pm-skills-2a12295.md) · [a real ⚠️ verdict with precautions](reports/codebase-memory-mcp-612eee2.md) ·
+[all reports](reports/README.md)
+
 > [!IMPORTANT]
 > The target is a **git repository** (a GitHub URL, any `https://` git URL, or a local folder), optionally with a
 > branch, tag or commit. Package names (`npm`, PyPI), marketplace names and `git@` SSH URLs are not accepted.

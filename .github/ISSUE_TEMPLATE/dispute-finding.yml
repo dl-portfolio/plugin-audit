@@ -1,0 +1,37 @@
+name: Dispute a finding or request a re-audit
+description: For maintainers (or anyone) who think a report is wrong, out of date, or fixed upstream.
+title: "Re-audit: <owner/repo>"
+labels: ["re-audit"]
+body:
+  - type: input
+    id: report
+    attributes:
+      label: Report
+      description: Link to the file in reports/
+      placeholder: https://github.com/dl-portfolio/plugin-audit/blob/main/reports/<id>.md
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What is this about?
+      options:
+        - A finding is wrong or overstated
+        - It was fixed upstream; please re-audit a newer commit
+        - Something is missing from the report
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: Details
+      description: Which finding, why, and evidence (file:line, a commit, docs). For a re-audit, give the commit or tag.
+    validations:
+      required: true
+  - type: checkboxes
+    id: maintainer
+    attributes:
+      label: Relationship
+      options:
+        - label: I maintain the audited project

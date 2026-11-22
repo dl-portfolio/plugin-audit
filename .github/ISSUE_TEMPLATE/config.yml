@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security problem in plugin-audit
+    url: https://github.com/dl-portfolio/plugin-audit/security/advisories/new
+    about: Containment bugs, report-publishing leaks, forged results. Please don't open a public issue.

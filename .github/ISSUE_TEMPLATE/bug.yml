@@ -1,0 +1,27 @@
+name: Bug in plugin-audit
+description: The pipeline itself misbehaves (not a verdict about a third-party tool).
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "**Containment or security bug?** Please use [private vulnerability reporting](https://github.com/dl-portfolio/plugin-audit/security/advisories/new) instead."
+  - type: input
+    id: commit
+    attributes:
+      label: plugin-audit commit
+    validations:
+      required: true
+  - type: input
+    id: command
+    attributes:
+      label: Command you ran
+      placeholder: ./audit https://github.com/owner/repo
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: Paste the relevant part of the output. Remove anything private.
+    validations:
+      required: true

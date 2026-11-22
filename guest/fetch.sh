@@ -1,5 +1,5 @@
 #!/bin/bash
-# fetch.sh github <owner/repo> <commit-sha> | git <https-url> <ref> | tar <path-in-vm>
+# fetch.sh github <owner/repo> <commit-sha> | git <https-url> <commit-sha> [ref] | tar <path-in-vm>
 # Root, inside the VM. Puts the target in /audit/src (root-owned, read-only to everyone else).
 # Nothing from the target is executed here; git never touches a GitHub target (archive download).
 set -euo pipefail
@@ -11,12 +11,25 @@ case "$kind" in
     curl -fsSL --retry 3 -o /audit/fetch/src.tgz "https://codeload.github.com/$2/tar.gz/$3"
     tar -xzf /audit/fetch/src.tgz -C /audit/src --strip-components 1 --no-same-owner --no-same-permissions
     ;;
-  git)
+  git) # <url> <commit-sha> [ref]: the host resolved the commit; fetch exactly that commit
+    [[ "$3" =~ ^[0-9a-f]{40}$ ]] || { echo "git: expected a commit SHA" >&2; exit 2; }
     /opt/audit/bin/netmode.sh open >/dev/null
-    git -c core.hooksPath=/dev/null -c core.symlinks=false -c protocol.file.allow=never \
-        -c submodule.recurse=false clone --depth 1 --no-recurse-submodules --branch "$3" -- "$2" /audit/fetch/repo
-    git -C /audit/fetch/repo rev-parse HEAD > /audit/fetch/commit
-    rm -rf /audit/fetch/repo/.git && cp -a /audit/fetch/repo/. /audit/src/
+    r=/audit/fetch/repo
+    git init -q "$r"
+    G() { git -C "$r" -c core.hooksPath=/dev/null -c core.symlinks=false -c protocol.file.allow=never \
+              -c submodule.recurse=false "$@"; }
+    G remote add origin "$2"
+    # Most servers serve a commit by SHA; otherwise fetch the ref (or HEAD), then everything as a last resort.
+    G fetch -q --depth 1 --no-tags --no-recurse-submodules origin "$3" 2>/dev/null ||
+      G fetch -q --depth 50 --no-tags --no-recurse-submodules origin "${4:-HEAD}" 2>/dev/null || true
+    unshallow=(); [ -f "$r/.git/shallow" ] && unshallow=(--unshallow)
+    G cat-file -e "$3^{commit}" 2>/dev/null ||
+      G fetch -q "${unshallow[@]}" --no-recurse-submodules origin \
+        '+refs/heads/*:refs/remotes/origin/*' '+refs/tags/*:refs/tags/*'
+    G checkout -q --detach "$3"
+    [ "$(G rev-parse HEAD)" = "$3" ] || { echo "git: fetched commit differs from $3" >&2; exit 1; }
+    echo "$3" > /audit/fetch/commit
+    rm -rf "$r/.git" && cp -a "$r/." /audit/src/
     ;;
   tar)
     tar -xf "$2" -C /audit/src --no-same-owner --no-same-permissions

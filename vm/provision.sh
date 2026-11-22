@@ -1,6 +1,8 @@
 #!/bin/bash
 # One-time provisioning of the audit-base VM. Runs as root INSIDE the VM, with network.
-# Every download is pinned to a version >= ~2 weeks old and checked against a sha256.
+# Every download is pinned to a version >= ~2 weeks old and checked against a sha256: toolchains and binaries (dl),
+# scanner source archives (gh_src), and semgrep with all its dependencies (vm/semgrep-requirements.txt, --require-hashes).
+# The one exception is the osv-scanner vulnerability database, a live feed fetched at build time by design.
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 A=/opt/audit
@@ -22,9 +24,11 @@ dl() { # url sha256 out
   curl -fsSL --retry 3 -o "$3" "$1"
   echo "$2  $3" | sha256sum -c --quiet -
 }
-gh_src() { # owner/repo commit destdir   (pinned by commit SHA)
-  rm -rf "$3"; mkdir -p "$3"
-  curl -fsSL --retry 3 "https://codeload.github.com/$1/tar.gz/$2" | tar -xz -C "$3" --strip-components 1
+gh_src() { # owner/repo commit sha256 destdir   (pinned by commit SHA, archive checked against the vetted sha256)
+  local t; t=$(mktemp)
+  dl "https://codeload.github.com/$1/tar.gz/$2" "$3" "$t"
+  rm -rf "$4"; mkdir -p "$4"
+  tar -xzf "$t" -C "$4" --strip-components 1; rm -f "$t"
 }
 
 # ---- toolchains
@@ -55,16 +59,20 @@ export PATH=/usr/local/go/bin:/usr/local/node/bin:$PATH
 export UV_PYTHON=/usr/bin/python3.12 UV_PYTHON_DOWNLOADS=never UV_CACHE_DIR=/var/cache/uv
 
 # ---- scanners (vetted 2026-11-08, see ../scanner-vetting.md), installed from their lockfiles
-gh_src NVIDIA/SkillSpector f3b25697d76256998ca9d42c198d256258d4c035 "$A/skillspector"
+gh_src NVIDIA/SkillSpector f3b25697d76256998ca9d42c198d256258d4c035 \
+   387d54edc3e5750960a4a76f14f5ac75aa85ee487526736b0008df9dd8908dec "$A/skillspector"
 (cd "$A/skillspector" && uv sync --locked --no-dev -q)
 
-gh_src cisco-ai-defense/skill-scanner c615acb70994cdf3f4ba54d955fef2e92ac84437 "$A/cisco"
+gh_src cisco-ai-defense/skill-scanner c615acb70994cdf3f4ba54d955fef2e92ac84437 \
+   9db9711fec2943b958d88f44e7ea335eb799fde14ad616d92477f679fd6b3554 "$A/cisco"
 (cd "$A/cisco" && SETUPTOOLS_SCM_PRETEND_VERSION=2.3.1 uv sync --frozen --no-dev -q)   # builds the cel-go helper from source (go.sum-pinned)
 
 uv venv -q "$A/semgrep-venv"
-uv pip install -q --python "$A/semgrep-venv/bin/python" "semgrep==1.182.0"
+# semgrep==1.182.0 and every dependency, hash-locked (uv pip compile --generate-hashes --exclude-newer 2026-11-08)
+uv pip install -q --python "$A/semgrep-venv/bin/python" --require-hashes --no-deps -r /tmp/semgrep-requirements.txt
 
-gh_src semgrep/semgrep-rules 17e31e11ebac99fb7dfe1cd288f7a32151b6f3f9 /tmp/semgrep-rules-all
+gh_src semgrep/semgrep-rules 17e31e11ebac99fb7dfe1cd288f7a32151b6f3f9 \
+   9dfe6866fbecd557f507078cb79721a9eb8f4764fc2f6163648ea1320be25933 /tmp/semgrep-rules-all
 rm -rf "$A/semgrep-rules" && mkdir -p "$A/semgrep-rules"
 # security-relevant rule sets only; drop test fixtures (*.test.yaml, *.fixed.*)
 for d in python javascript typescript go c bash generic dockerfile yaml/github-actions ruby rust php java; do
@@ -134,10 +142,10 @@ cat > /etc/tinyproxy/allow.txt <<'EOF'
 (^|\.)proxy\.golang\.org$
 (^|\.)sum\.golang\.org$
 (^|\.)crates\.io$
-(^|\.)github\.com$
-(^|\.)codeload\.github\.com$
-(^|\.)objects\.githubusercontent\.com$
-(^|\.)release-assets\.githubusercontent\.com$
+^github\.com$
+^codeload\.github\.com$
+^objects\.githubusercontent\.com$
+^release-assets\.githubusercontent\.com$
 (^|\.)nodejs\.org$
 EOF
 systemctl disable --now tinyproxy

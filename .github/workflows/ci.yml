@@ -26,7 +26,7 @@ jobs:
         run: shellcheck --version && shellcheck -S warning audit audit.sh guest/*.sh vm/provision.sh
 
       - name: python (pyflakes-class errors + syntax)
-        run: pipx run 'ruff==0.8.6' check --select F,E9 guest docs/assets/generate.py
+        run: pipx run 'ruff==0.8.6' check --select F,E9 guest host docs/assets/generate.py
 
       - name: javascript syntax
         run: for f in guest/*.js tests/fixture-malicious/*.js; do node --check "$f"; done

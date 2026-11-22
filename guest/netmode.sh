@@ -16,7 +16,7 @@ grep -q "filter-active.txt" /etc/tinyproxy/tinyproxy.conf || \
 case "$mode" in
   open)    echo "server=$up" > "$conf"; : > "$active" ;;
   install) { echo "address=/#/"
-             sed -E 's/^\(\^\|\\\.\)//; s/\$$//; s/\\\././g' /etc/tinyproxy/allow.txt | while read -r d; do
+             sed -E 's/^\(\^\|\\\.\)//; s/^\^//; s/\$$//; s/\\\././g' /etc/tinyproxy/allow.txt | while read -r d; do
                [ -n "$d" ] && echo "server=/$d/$up"; done; } > "$conf"
            cp /etc/tinyproxy/allow.txt "$active" ;;
   run|closed) echo "address=/#/" > "$conf"; : > "$active" ;;

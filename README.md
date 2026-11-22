@@ -56,9 +56,9 @@ full of decoy credentials with the network sinkholed, and reports what it actual
 |---|---|---|
 | 🧱 | **Three independent signals** | Static analysis, behaviour in a monitored VM, and an LLM code review. A clean runtime never clears a static red flag. |
 | 🍯 | **Honeypot runtime** | ~50 decoy credentials (SSH, cloud, GitHub, Claude, browsers, wallets; Linux and macOS paths), strace + inotify, persistence diff. |
-| 🕳️ | **Network sinkhole** | Every DNS lookup and connection is refused **and logged by name**, so the report names the exfil host. |
+| 🕳️ | **Network sinkhole** | When the tool runs, every DNS lookup and connection is refused **and logged by name**, so the report names the exfil host. During install only package registries, `github.com` and GitHub's download hosts are reachable, through a logging proxy. |
 | 🍎 | **macOS without a Mac VM** | A `run-darwin` phase tells JS/Python code it runs on macOS, so Mac-only stealer branches fire and are recorded. |
-| 🤖 | **Contained LLM** | The models that plan the test and write the report have no shell, no network, and can write only their own output files. |
+| 🤖 | **Contained LLM** | The models that plan the test and write the report run inside the audit's own folder: no shell, no network, no reads outside it, and they can write only their own output files. A host script checks the report for secrets before publishing it. |
 | 📌 | **Reproducible** | Targets pinned to a commit; every scanner and toolchain pinned by version + checksum or commit, ≥ 2 weeks old, [vetted](scanner-vetting.md). |
 | 🧪 | **Positive control** | A fake stealer fixture must come out ⛔ DO NOT USE after every pipeline change. |
 | 💰 | **Measured cost** | ~2.2M tokens, about $2 per audit at API rates, from real transcripts ([details](#-claude-usage-and-cost)). |
@@ -102,8 +102,8 @@ Where scenarios come from:
 | Source | Covers | Misses |
 |---|---|---|
 | **Generic baseline** (`guest/auto_scenario.py`, every audit) | Dependency install, `--help`/`--version`, every MCP server probed, every Claude hook fired, scripts bundled with skills | The product's own installer and real commands |
-| **Tailored** (headless LLM in `./audit`, reads the README as data) | Adds the documented install path and main use | Docker, GUI, Rust, anything needing real accounts. It can add lines but never remove the baseline |
-| **Hand-written** (`/audit` in Claude Code, or you) | Whatever you write | — (takes precedence) |
+| **Tailored** (headless LLM in `./audit`, reads the README as data) | Adds the documented install path and main use | Docker, GUI, Rust, anything needing real accounts. It runs after the baseline, as a separate step, so it cannot skip it |
+| **Hand-written** (`/audit` in Claude Code, or you) | Whatever you write | — (also runs after the baseline) |
 
 > [!WARNING]
 > Reports written before 2026-11-09 used the **generic baseline only**. For BMAD-METHOD that meant `npm ci` and
@@ -152,10 +152,10 @@ What a malicious extension could try, mapped to [MITRE ATT&CK](https://attack.mi
 | Sandbox, CI or OS evasion | T1497 (.001 .003), T1082 | — | run-darwin phase; no `CI` in run phase; static VM-check rules | VM-aware or time-delayed malware ([#6](https://github.com/dl-portfolio/plugin-audit/issues/6)) |
 | Obfuscated payloads | T1027 | — | Static rules for decoded execution, large base64 blobs; five scanners | — |
 | Skill or tool text that steers the agent | — | AML.T0051.001, AML.T0080, AML.T0053 · LLM01, LLM06, ASI01, ASI02, ASI06 | Static injection rules; reviewer reads every SKILL.md; agent-steering is a finding | Prompt-only skills never execute ([#5](https://github.com/dl-portfolio/plugin-audit/issues/5)) |
-| Injection aimed at the reviewer or scenario writer | — | AML.T0051.001 · LLM01 | LLMs have no shell/network; output-only writes; planted text is reported | A fooled reviewer can misjudge severity |
+| Injection aimed at the reviewer or scenario writer | — | AML.T0051.001 · LLM01 | LLMs confined to `work/<id>/`: no shell/network, no reads elsewhere, output-only writes; secrets/host-path check before publishing; planted text is reported | A fooled reviewer can misjudge severity |
 | Rug pull after review | — | AML.T0109 · ASI04 | Verdict pinned to a commit; unpinned installs flagged | Re-audit before every update |
-| Compromised scanner or toolchain | T1195.001 | LLM03 | Vetted, pinned, ≥ 2 weeks old, run without network | Archive checksums not yet verified ([#8](https://github.com/dl-portfolio/plugin-audit/issues/8)) |
-| Attack on the host through the pipeline (archives, symlinks, git) | — | — | Unpacked inside the VM; exported read-only with symlinks stripped; git never parses it on the host | — |
+| Compromised scanner or toolchain | T1195.001 | LLM03 | Vetted, pinned by version + sha256 (scanner archives and semgrep's dependencies included), ≥ 2 weeks old, run without network; killed before export | The OSV database is a live feed by design |
+| Attack on the host through the pipeline (archives, symlinks, git) | — | — | Unpacked inside the VM; exported from a root-only folder after scanners are killed; symlinks stripped in the VM and again on the host; git never parses the target on the host; target and ref validated and quoted before reaching the VM's root shell | — |
 
 <sub>ATT&CK IDs checked on attack.mitre.org; ATLAS IDs from MITRE's `atlas-data` release; OWASP Agentic (ASI) names
 from secondary sources pending the official PDF.</sub>
@@ -202,9 +202,9 @@ macOS-only branch, which only the run-darwin phase triggers.
 ## 🔐 Trust model
 | Component | Can | Cannot |
 |---|---|---|
-| **Target code** | Run in the VM as `sandbox` (no sudo); reach package registries during install | Reach the host, the internet in run phases, or any real secret |
-| **Scenario LLM** (headless Claude) | Read the target as data; write `scenario/install.sh`, `run.sh`, `notes.txt` | Run commands, use the web, start subagents, remove baseline scenario lines |
-| **Review LLM** (headless Claude) | Read source and summaries; write under `reports/` | Run commands, use the web, start subagents |
+| **Target code** | Run in the VM as `sandbox` (no sudo); reach package registries, `github.com` and GitHub's download hosts during install | Reach the host, the internet in run phases, other hosts at install (e.g. `api.github.com`, `gist.github.com`), or any real secret |
+| **Scenario LLM** (headless Claude) | Read `work/<id>/` (target as data); write `scenario/install.sh`, `run.sh`, `notes.txt` | Read or write outside `work/<id>/`, run commands, use the web, start subagents, skip the baseline scenario |
+| **Review LLM** (headless Claude) | Read `work/<id>/`; write `work/<id>/report.md` and `index-row.md` | Read or write outside `work/<id>/` (so no host files, no other reports), run commands, use the web, start subagents. `host/publish_report.py` refuses output that looks like a secret or a host path |
 | **Scanners** | Read the source copy as user `auditor` | Reach the network |
 | **Anthropic** (model provider) | Receives the parts of the target the LLMs read | — so don't audit code you may not share with your provider |
 
@@ -246,7 +246,7 @@ Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issu
 | Choose the review model on evidence | 📋 Planned | Possible ~40% saving | [#7](https://github.com/dl-portfolio/plugin-audit/issues/7) |
 | Agent run for prompt-only skills | 💡 Designed | See what a skill makes an agent do | [#5](https://github.com/dl-portfolio/plugin-audit/issues/5) |
 | **Linux host support** (QEMU/KVM, amd64 + arm64) | 💡 Designed | Run it on any Linux workstation or CI runner | [#4](https://github.com/dl-portfolio/plugin-audit/issues/4) |
-| Verify scanner archives by checksum | 💡 Designed | Closes a supply-chain gap in the auditor itself | [#8](https://github.com/dl-portfolio/plugin-audit/issues/8) |
+| Verify scanner archives by checksum | ✅ Done | Closes a supply-chain gap in the auditor itself | [#8](https://github.com/dl-portfolio/plugin-audit/issues/8) |
 | Real macOS guest VM | 🧊 Manual only | Native Mac malware; days of work, licence limits | [#6](https://github.com/dl-portfolio/plugin-audit/issues/6) |
 
 <details>
@@ -323,7 +323,7 @@ Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issu
 | `/audit <target>` (in Claude Code) | Same, but you review the scenario together |
 | `/audit <id>` (in Claude Code) | Re-do only the review and report for an existing audit |
 | `./audit.sh new <target> [ref]` | Clone VM, fetch, static scan, baseline scenario; prints the ID |
-| `./audit.sh run <id>` | Runtime test (uses `scenario/*.sh`, else `scenario/auto/*`) |
+| `./audit.sh run <id>` | Runtime test (`scenario/auto/*` first, then `scenario/*.sh` if present) |
 | `./audit.sh destroy <id>` | Delete the VM clone; results stay |
 | `./audit.sh copies <id>` | You run this: readable copies of files your deny rules hide |
 | `./audit.sh base` | Rebuild the base VM after changing `vm/*` |
@@ -337,7 +337,8 @@ The **ID** is `<name>-<first 7 chars of the commit>`. A verdict is valid for tha
 | `src/` | Read-only copy of the target, symlinks removed |
 | `static/static-summary.txt` | All scanners condensed; raw JSON alongside |
 | `scenario/auto/` | Generic baseline `install.sh`, `run.sh`, `notes.txt` |
-| `scenario/install.sh`, `run.sh`, `notes.txt` | Tailored or hand-written scenario (takes precedence) |
+| `scenario/install.sh`, `run.sh`, `notes.txt` | Tailored or hand-written scenario (runs after the baseline) |
+| `report.md`, `index-row.md` | Reviewer output before `host/publish_report.py` copies it to `reports/` |
 | `dynamic/dynamic-summary.txt` | What happened at runtime, per phase; logs alongside |
 
 To change the scenario: edit `work/<id>/scenario/*.sh`, then `./audit.sh run <id>` (after `./audit.sh new`, which keeps
@@ -390,7 +391,8 @@ After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with de
 |---|---|---|
 | `audit` | One-command entry point | Host |
 | `audit.sh` | Steps: `base`, `new`, `run`, `copies`, `destroy` | Host |
-| `vm/` | Base VM template and one-time provisioning | Host → VM |
+| `host/publish_report.py` | Checks the reviewer's output for secrets and host paths, then writes `reports/` | Host |
+| `vm/` | Base VM template, one-time provisioning, hash-locked semgrep requirements | Host → VM |
 | `guest/static.sh`, `claude_checks.py`, `summarize_static.py` | Static scan | VM (`auditor`) |
 | `guest/auto_scenario.py` | Baseline scenario | VM (`auditor`) |
 | `guest/dynamic.sh`, `netmode.sh`, `analyze_dynamic.py` | Runtime phases, network modes, summary | VM (root; target as `sandbox`) |

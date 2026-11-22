@@ -52,13 +52,19 @@ def load_decoys(o):
 
 
 STRONG_DECOY = re.compile(r'/\.ssh/id_|/\.gnupg/|/\.config/gh/|/\.claude/|/\.config/anthropic|/\.config/openai|google-chrome|mozilla|Exodus|electrum|bitcoin|/\.bash_history|/\.kube/|/\.aws/|/\.git-credentials|/work/\.env$|/sandbox/\.env$|^/Users/sandbox/')
-EXPECTED_READERS = {  # decoy -> programs that legitimately read it
-    '/.npmrc': ('node', 'npm', 'npx', 'pnpm', 'yarn', 'corepack', 'bun'),
-    '/.netrc': ('python', 'python3', 'curl', 'git', 'git-remote-http', 'git-remote-https', 'pip', 'uv', 'go', 'wget'),
+EXPECTED_READERS = {  # decoy -> programs that legitimately read it. Interpreters (node, python) are never listed:
+    # a postinstall script stealing ~/.npmrc runs as plain `node`, while npm itself is named by LAUNCHERS below.
+    '/.npmrc': ('npm', 'npx', 'pnpm', 'yarn', 'corepack', 'bun'),
+    '/.netrc': ('curl', 'git', 'git-remote-http', 'git-remote-https', 'pip', 'pip3', 'uv', 'go', 'wget'),
     '/.pypirc': ('twine',),
     '/.docker/config.json': ('docker',),
     '/.ssh/config': ('ssh', 'git', 'scp'),
 }
+# An interpreter exec'd on a known package-manager entry point is labelled as that tool, not as node/python.
+LAUNCHERS = {'npm-cli.js': 'npm', 'npx-cli.js': 'npx', 'pnpm.cjs': 'pnpm', 'pnpm.js': 'pnpm', 'pnpx.cjs': 'pnpm',
+             'yarn.js': 'yarn', 'yarn.cjs': 'yarn', 'corepack.cjs': 'corepack', 'corepack': 'corepack',
+             'npm': 'npm', 'npx': 'npx', 'pnpm': 'pnpm', 'yarn': 'yarn', 'pip': 'pip', 'pip3': 'pip3'}
+INTERPRETER = re.compile(r'^(node|nodejs|python[\d.]*)$')
 SUSP_EXEC = re.compile(r'^(curl|wget|nc|ncat|netcat|socat|ssh|scp|sftp|rsync|base64|xxd|openssl|crontab|systemctl|sudo|su|osascript|security|chattr|nohup|setsid|at|python[\d.]*\s+-c|node\s+-e|perl\s+-e|bash\s+-c\s+.*(http|curl|wget|base64)|sh\s+-c\s+.*(http|curl|wget|base64)|tor|xmrig|.*miner)\b')
 EXEC_RE = re.compile(r'^(\d+)\s+execve\("([^"]+)", \[(.*?)\](?:, 0x[0-9a-f]+(?: /\* \d+ vars \*/)?)?\)?\s*(?:= (-?\d+)(?: (\w+))?)?')
 OPEN_RE = re.compile(r'^(\d+)\s+openat\((?:AT_FDCWD|\d+<?[^,]*>?), "([^"]+)", ([A-Z_|]+)(?:, \d+)?\)\s*= (-?\d+)')
@@ -67,7 +73,7 @@ UNLINK_RE = re.compile(r'^(\d+)\s+(unlinkat|renameat2)\((?:AT_FDCWD|\d+)[^"]*"([
 
 
 def parse_strace(path):
-    res = {'execs': [], 'exec_counter': Counter(), 'opens': [], 'connects': [], 'deletes': []}
+    res = {'execs': [], 'exec_counter': Counter(), 'opens': [], 'connects': [], 'deletes': [], 'launched': set()}
     comm = {}
     try:
         if path.endswith('.zst'):
@@ -84,7 +90,12 @@ def parse_strace(path):
                     continue
                 args = re.findall(r'"((?:[^"\\]|\\.)*)"', argv)
                 cmd = ' '.join(args)[:300]
-                comm[pid] = os.path.basename(exe)
+                name = os.path.basename(exe)
+                if INTERPRETER.match(name):
+                    script = next((a for a in args[1:] if not a.startswith('-')), '')
+                    name = LAUNCHERS.get(os.path.basename(script), name)
+                comm[pid] = name
+                res['launched'].add(name)
                 res['execs'].append((pid, exe, cmd))
                 res['exec_counter'][os.path.basename(exe)] += 1
             continue
@@ -185,7 +196,9 @@ def analyze(o):
         for proc, p, flags, ok in st['opens']:
             if p in decoys or any(p.startswith(d.rstrip('/') + '/') for d in decoys if d.endswith('/')):
                 exp = next((progs for k, progs in EXPECTED_READERS.items() if p.endswith(k)), ())
-                expected = proc in exp or (proc in ('?', 'node', 'python3', 'python3.12') and any(x in st['exec_counter'] for x in exp if x not in ('node', 'python', 'python3')))
+                # '?' = a process that forked without exec (e.g. a package manager's worker): expected only if that
+                # package manager ran in this phase. A named interpreter (node, python) is never expected.
+                expected = proc in exp or (proc == '?' and any(x in st['exec_counter'] or x in st['launched'] for x in exp))
                 decoy_hits.append({'process': proc, 'path': p, 'flags': flags, 'expected': expected,
                                    'strong': bool(STRONG_DECOY.search(p))})
             elif p.startswith((HOME + '/', MACHOME + '/')) and not p.startswith(CACHE_PREFIXES) and '/node_modules/' not in p:
@@ -261,7 +274,12 @@ def analyze(o):
         ino = [l for l in ino if l.split(' ', 2)[-1] in decoys]
         out['decoy_inotify'] = ino[:100]
     except OSError:
-        out['decoy_inotify'] = []
+        ino, out['decoy_inotify'] = [], []
+    # Kernel saw a decoy opened or read, but no traced open of that absolute path explains it: a relative-path open
+    # after chdir, or a process outside strace (e.g. a daemon started another way). Always worth a look.
+    seen = {d['path'] for r in out['phases'].values() for d in r['decoy_hits']}
+    touched = {l.split(' ', 2)[-1] for l in ino if re.search(r'\b(OPEN|ACCESS)\b', l.split(' ', 2)[1] if l.count(' ') >= 2 else '')}
+    out['decoy_reads_not_in_strace'] = sorted(touched - seen)[:60]
     json.dump(out, open(f'{o}/dynamic.json', 'w'), indent=1)
 
     # human summary
@@ -316,6 +334,10 @@ def analyze(o):
         P(f"  new files ({len(pz['new_files'])}): {pz['new_files'][:30]}")
         P(f"  changed files: {pz['changed_files'][:20]}")
         P(f"  removed files: {pz['removed_files'][:20]}")
+    unexplained = out['decoy_reads_not_in_strace']
+    P(f"== DECOY READS SEEN ONLY BY THE KERNEL (relative path or untraced process): {len(unexplained)}")
+    for p in unexplained[:30]:
+        P(f"  !! {p}")
     P(f"== DECOY INOTIFY (kernel file events on decoy folders): {len(out['decoy_inotify'])} events")
     for l in out['decoy_inotify'][:20]:
         P('  ' + l)

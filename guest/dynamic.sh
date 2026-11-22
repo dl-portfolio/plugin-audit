@@ -40,7 +40,9 @@ macdecoy .aws/credentials $'[default]\naws_access_key_id = AKIAAUDITDECOY7EXMPL\
 macdecoy .config/gh/hosts.yml $'github.com:\n    oauth_token: gho_AUDITDECOYmac000000000000000000000000'
 macdecoy .zsh_history $': 1794200000:0;export GITHUB_TOKEN=ghp_AUDITDECOY222222222222222222222222222'
 chown -R sandbox:sandbox "$MH"; chmod 700 "$MH/.ssh"
-for f in install run; do [ -f /audit/scenario/$f.sh ] || echo 'echo "(no '$f' step)"' > /audit/scenario/$f.sh; done
+# Each phase runs auto-<phase>.sh (generated from the manifests) and then <phase>.sh (tailored), as separate steps:
+# nothing in the tailored script can stop the auto scenario from running.
+for f in install run auto-install auto-run; do [ -f /audit/scenario/$f.sh ] || echo 'echo "(no '$f' step)"' > /audit/scenario/$f.sh; done
 chmod 755 /audit/scenario; chmod 644 /audit/scenario/*.sh
 
 python3 -I $A/bin/analyze_dynamic.py snapshot "$O/snap-before.json"
@@ -70,7 +72,7 @@ phase() { # name netmode timeout [scenario-script] [extra env, no spaces inside 
       env -i HOME=/home/sandbox USER=sandbox LOGNAME=sandbox SHELL=/bin/bash LANG=C.UTF-8 TERM=xterm \
         PATH=/home/sandbox/.local/bin:/home/sandbox/go/bin:/usr/local/go/bin:/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin \
         UV_PYTHON=/usr/bin/python3.12 UV_PYTHON_DOWNLOADS=never $ci $PROXY_ENV $DECOY_ENV $extra \
-        bash -c "bash /audit/scenario/$script.sh; echo \$? > $mark" > "$O/$ph.stdout" 2> "$O/$ph.stderr" ) &
+        bash -c "bash /audit/scenario/auto-$script.sh; bash /audit/scenario/$script.sh; echo \$? > $mark" > "$O/$ph.stdout" 2> "$O/$ph.stderr" ) &
   local spid=$! rc=124 waited=0
   while [ $waited -lt "$tmo" ]; do
     [ -s "$mark" ] && { rc=$(cat "$mark"); break; }

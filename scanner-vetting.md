@@ -19,15 +19,16 @@
 
 Maybe later for Snyk agent-scan, for a dynamic stage only.
 
-Archive sha256 values recorded at vetting (`vm/provision.sh` does not verify them yet: [#8](https://github.com/dl-portfolio/plugin-audit/issues/8)):
+Archive sha256 values recorded at vetting. `vm/provision.sh` verifies each archive against them (`gh_src`) and fails the build on a mismatch ([#8](https://github.com/dl-portfolio/plugin-audit/issues/8)):
 
 | Scanner | Archive sha256 | Other integrity note |
 |---|---|---|
-| SkillSpector | 387d54ed…8dec | — |
-| Cisco skill-scanner | 9db9711f…3554 | — |
+| SkillSpector | `387d54edc3e5750960a4a76f14f5ac75aa85ee487526736b0008df9dd8908dec` | — |
+| Cisco skill-scanner | `9db9711fec2943b958d88f44e7ea335eb799fde14ad616d92477f679fd6b3554` | — |
 | gitleaks | — | Checksums only, no signature |
 | osv-scanner | — | SLSA provenance attached |
-| semgrep | — | No GitHub binaries (PyPI or Docker) |
+| semgrep | — | PyPI, installed with `--require-hashes` from `vm/semgrep-requirements.txt` (all 66 packages, released ≤ 2026-11-08) |
+| semgrep-rules | `9dfe6866fbecd557f507078cb79721a9eb8f4764fc2f6163648ea1320be25933` | Commit `17e31e1` |
 
 ## Vetting method
 
@@ -158,7 +159,7 @@ Verdict: use with local rules and `--metrics off`.
 - It sends metrics only when it pulls rules from its online registry.
 - Condition: bundle the rules into the image and run with `--metrics off` (or `SEMGREP_SEND_METRICS=off`).
 
-Installed from PyPI (`semgrep==1.182.0`) into its own venv. Local rules come from `semgrep/semgrep-rules` at commit `17e31e11ebac99fb7dfe1cd288f7a32151b6f3f9` (security rule sets only; see the licence note in the README). `static.sh` runs it with `--config /opt/audit/semgrep-rules --metrics off --disable-version-check` and `SEMGREP_SEND_METRICS=off`.
+Installed from PyPI (`semgrep==1.182.0`) into its own venv, with every dependency pinned by hash in `vm/semgrep-requirements.txt` (`uv pip compile --generate-hashes --exclude-newer 2026-11-08`). Local rules come from `semgrep/semgrep-rules` at commit `17e31e11ebac99fb7dfe1cd288f7a32151b6f3f9` (security rule sets only; see the licence note in the README). `static.sh` runs it with `--config /opt/audit/semgrep-rules --metrics off --disable-version-check` and `SEMGREP_SEND_METRICS=off`.
 
 ## Snyk agent-scan
 
@@ -191,6 +192,7 @@ Neither skill scanner handles these.
   open network.
 - Scans run as the `auditor` user: nftables lets it reach loopback only, DNS answers nothing, the target is a copy,
   and no API keys or host files are present.
+- Before results leave the VM, every `auditor` process is killed, `/audit/out` goes back to root, symlinks are removed, and the source copy is packed in a root-only folder; the host deletes any symlink again after each copy.
 - So even a compromised scanner dependency could only tamper with scan results, not reach the host or its secrets.
 - That is why the verdict comes from several sources: two scanners, our own checks and a manual read.
 

@@ -45,3 +45,6 @@ Fine to self-host with the six settings below.
 - Whether Claude's plan mode under `-p` allows web fetches, which would make the injection risk an exfiltration risk.
 - Docker image build, Playwright/Camoufox browser scraping, Gmail and LLM flows at runtime (no Docker, accounts or keys in the VM).
 - Whether the published ghcr image matches this source.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

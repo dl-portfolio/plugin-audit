@@ -41,3 +41,6 @@ Commit `eb0bf708029aa365dc6ab79444488eb52185458b` · audited 2026-11-09 · Pytho
 - **Path traversal not proven end to end:** it depends on whether Telegram passes `/` or `..` in document file names. That was not tested.
 - **Unread files:** `.env.example` is hidden by the reviewer's deny rules (`static/unreadable-by-reviewer.txt`). The VM scanners covered it, and gitleaks flagged nothing there. Tests and the `docs/` HTML previews were scanned by grep only. No symlinks were stripped.
 - **Linux VM ≠ macOS**, and evasion by malware remains possible in general.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

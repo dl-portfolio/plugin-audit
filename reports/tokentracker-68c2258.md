@@ -88,3 +88,6 @@ These were covered by code review only.
 - **Files hidden by deny rules:** `.env.example` and `dashboard/.env.example` were not read (the VM scanners covered them).
 - **Third-party content:** skills downloaded through the Skills tab, LiteLLM pricing data and the npm package as published (it may differ from git) are outside this audit.
 - **Evasion:** malware can detect a VM or wait, so a clean run is evidence, not proof.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

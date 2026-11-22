@@ -42,3 +42,6 @@ Use it on repos you trust, or run it inside a VM.
 - `SKILL.md`, `README.md`, the relevant parts of `HUNTING.md` and the validators' I/O paths were read in full. The 13 companion attack-class `.md` files (~300 KB of hunting checklists) were searched (network, credentials, Claude config, install/fetch, hidden Unicode, HTML comments, base64, reviewer-directed text) rather than read line by line.
 - How agents actually behave under the skill (real Claude session, real target) and the `skills` CLI from skills.sh were not tested.
 - Linux VM ≠ macOS, evasion is always possible, and later commits on `main` are not covered. No files were hidden by deny rules (`unreadable-by-reviewer.txt` is empty), and there were no symlinks.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

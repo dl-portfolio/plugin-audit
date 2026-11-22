@@ -41,3 +41,6 @@ Commit `c033e28d6eccae43c1762f4653f9c320b16b050e` (video-explainer 0.1.0) · aud
 - **Large surface:** 172 Python files. We reviewed every subprocess, network, env, file-path and Claude-invocation site, but not every prompt template line by line.
 - **Linux VM ≠ macOS**, and evasion by malware remains possible in general.
 - **Unread files:** none hidden by deny rules (`static/unreadable-by-reviewer.txt` is empty). No symlinks were stripped.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

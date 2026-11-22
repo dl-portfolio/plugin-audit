@@ -45,3 +45,6 @@ Prefer the CLI with file paths. Feed it a CSV with no password column, and delet
 - Third-party parsers that see your untrusted files (`pypdf`, `beautifulsoup4`, `openpyxl`, `mailbox`) were not audited, and the versions resolved at install time were not recorded.
 - I read the web server, CLI, encryption, models, history/password connectors and report template closely. The rest (bookmarks, email, connected-apps, dedupe/scoring/features/pipeline) was checked by searching for dangerous primitives and data sinks, not line by line.
 - Evasion is always possible: a clean run is evidence, not proof. No files were hidden by deny rules (`unreadable-by-reviewer.txt` is empty).
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

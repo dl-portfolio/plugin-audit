@@ -63,3 +63,6 @@ Also, **the runtime test exercised nothing**: pnpm failed to start, so nothing w
 - **Hidden from the reviewer:** 63 files named `secrets*`, `credentials*` or `.env*`, which your deny rules hide. These include `server/src/secrets/*` (local encrypted and AWS secret providers), `server/src/services/secrets.ts`, `cli/src/config/secrets-key.ts` and the chat-channel `credentials.ts` files. The full list is in `work/paperclip-d69631b/static/unreadable-by-reviewer.txt`. The VM scanners did cover them. To review them, run `./audit.sh copies paperclip-d69631b`.
 - **Release artifacts:** whether the npm `paperclipai` release and the prebuilt runner/Copilot binaries match this source.
 - **Limits:** a Linux VM ≠ macOS, and evasive code could behave differently.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

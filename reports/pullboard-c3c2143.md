@@ -42,3 +42,6 @@ Commit `c3c21438ebda51fc410519b23cdea68801b1bb79` (v0.9.3) · audited 2026-11-09
 - **npm package vs. source:** the published tarball was not compared with this commit (it has provenance, which the audit did not verify).
 - **Linux VM ≠ macOS:** the Keychain migration and macOS-only paths (`security`, `sysctl`) were reviewed in code only. Evasion by malware remains possible in general.
 - **Unread files:** none (`static/unreadable-by-reviewer.txt` is empty, and no symlinks were stripped).
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

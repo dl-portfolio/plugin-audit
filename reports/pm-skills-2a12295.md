@@ -43,3 +43,6 @@ Commit `2a12295a7717569baa7be181b4cfebe3ca38a6bb` (v2.2.0) · audited 2026-11-08
 - `CHANGELOG.md` and the 9 plugin `README.md` files were searched rather than read line by line; none of them is loaded by the agent.
 - Evasion is always possible, and later commits on `main` are not covered. No files were hidden by deny rules (`unreadable-by-reviewer.txt` is empty).
 - Pipeline note: this audit found that the skill scanners only covered the first 40 of 79 skill folders. The cap is now 150, and the re-run scanned all 79 with both scanners.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

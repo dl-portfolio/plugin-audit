@@ -41,3 +41,6 @@ Use the Claude-plugin route, or install with `--skip-config` and configure only 
 - The macOS build (both runs were on Linux arm64), the Lens front-end in a real browser, and the actual Hugging Face model download.
 - Whether release binaries match the source.
 - The adapters for the other ~44 agent clients in `src/cli/cli.c` (694 KB, not fully read), and vendored parsers.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

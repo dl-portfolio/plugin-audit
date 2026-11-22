@@ -44,3 +44,6 @@ No prompt injection, hidden Unicode, obfuscated payloads, dependencies or secret
 - **Linux VM ≠ macOS:** paths are hard-coded to `/home/sandbox`. A real variant using `os.homedir()` would hit the same files on a Mac.
 - **Evasion:** the VM check currently does nothing. A variant that exits inside a VM would hide its runtime behaviour, but the static flags would remain.
 - No files were hidden by deny rules (`unreadable-by-reviewer.txt` empty), and there were no symlinks.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

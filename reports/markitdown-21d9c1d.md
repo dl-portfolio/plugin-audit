@@ -44,3 +44,6 @@ Commit `21d9c1d01ecc12538dab19811fd247ef2f96ef60` (markitdown 0.1.9, markitdown-
 - **Static gaps:** 5 large files were skipped by our checks. 43 binary files (test fixtures) can't be read as source. osv-scanner found no lockfile, so dependency CVEs were not checked. PyPI and Docker artifacts were not compared with this source.
 - **Linux VM ≠ macOS**, and evasion by malware remains possible in general.
 - **Unread files:** none hidden by deny rules (`static/unreadable-by-reviewer.txt` is empty). No symlinks were stripped.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

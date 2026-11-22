@@ -49,3 +49,6 @@ Install a pinned version, skip the add-on modules unless you audit them, and use
 - Add-on modules (`bmad-builder`, `bmad-loop`, `bmad-module-game-dev-studio`, CIS, TEA, WDS) and the npm tarball are separate code and were not audited.
 - osv-scanner produced no output for this run (no `osv.json`), so known-vulnerable/MAL- npm packages were **not** checked. The VM `npm ci` was clean, but rerun osv before relying on the dependency tree.
 - Linux VM ≠ macOS, and evasion is always possible. No files were hidden by deny rules (`unreadable-by-reviewer.txt` is empty). One symlink (`website/src/content/docs -> ../../../docs`) was stripped; its target is in the review copy.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

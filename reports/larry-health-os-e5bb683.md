@@ -43,3 +43,6 @@ Commit `e5bb6832d11b74e39941ccbe51cdbe4b4a286e75` · audited 2026-11-09 · Self-
 - **Breadth:** about 1,900 files (1,160 `.py`). The review focused on the installer, Docker/compose generation, network clients, auth, auto-run tooling and the static hits. Many SQL "raw query" semgrep hits and most job modules were not read line by line. Prompt files were not read in full for injection text, but hidden-Unicode and instruction-to-agent greps came back clean apart from the BOM strip.
 - **Unread file:** `secrets_paths.py` is hidden by the reviewer's deny rules (`static/unreadable-by-reviewer.txt`). The VM scanners covered it. No symlinks were stripped.
 - **macOS-only paths** (osascript Reminders, EventKit, launchd, Colima agent) were checked in code only. Linux VM ≠ macOS, and evasion by malware remains possible in general.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

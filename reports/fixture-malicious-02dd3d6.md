@@ -22,3 +22,6 @@ Local fixture · audited 2026-11-08 · a fake npm "helper" written to behave lik
 - Regression re-run 17:44 after all fixes: static now also flags the `.bashrc` write (`setup.js:10`); runtime caught every behaviour again, and inotify confirmed the 4 decoy reads at kernel level. Re-auditing an existing ID no longer fails on the read-only `src/` copy.
 
 Re-run after any pipeline change: `./audit.sh new tests/fixture-malicious`, then `run` with `npm install` / `node cli.js`.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

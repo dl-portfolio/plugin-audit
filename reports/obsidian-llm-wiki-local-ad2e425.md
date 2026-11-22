@@ -34,3 +34,6 @@ Commit `ad2e425f20f348154dde19d7c895b9bba69b7ad5` · audited 2026-11-08 · Pytho
 - Cloud provider paths, the interactive `olw setup`, and `olw watch` at runtime.
 - Whether the PyPI release matches this commit.
 - macOS-specific file watching (FSEvents).
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

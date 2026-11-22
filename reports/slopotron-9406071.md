@@ -29,3 +29,6 @@ Installing copied exactly two files. Nothing executed, nothing touched the netwo
 - How the prompt behaves in a live Claude session (no model in the VM).
 - The image contents (valid PNG/JPEG with no embedded strings, but not viewed).
 - The sibling skills mentioned in the README.
+
+---
+*This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*

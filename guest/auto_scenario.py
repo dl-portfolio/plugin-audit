@@ -133,7 +133,8 @@ for where, name, s in servers[:10]:
             inst.append(f'timeout 300 {" ".join(parts)} --help </dev/null || true')
             env = ('npm_config_prefer_offline=true npm_config_offline=true UV_OFFLINE=1 ' + env).strip()
         run.append(f'# MCP server "{name}" from {rel(where) if where != src else "."}')
-        run.append(f'{"env " + env + " " if env else ""}python3 -I /opt/audit/bin/mcp_probe.py --call -- {" ".join(parts)} || true')
+        # --name: the manifest is saved (and diffed against the next audit) under the server's own name
+        run.append(f'{"env " + env + " " if env else ""}python3 -I /opt/audit/bin/mcp_probe.py --call --name {q(str(name))} -- {" ".join(parts)} || true')
     elif s.get('url'):
         notes.append(f'MCP server "{name}" is remote ({s["url"]}) - not contacted; review statically')
 

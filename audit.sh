@@ -10,7 +10,7 @@
 #   ./audit.sh destroy <AUDIT_ID>                                -> delete the VM clone
 #   ./audit.sh base                                              -> (re)build audit-base from vm/
 #
-# Results: work/<AUDIT_ID>/{meta.json,static/,dynamic/,src/ (read-only, symlinks removed)}
+# Results: work/<AUDIT_ID>/{meta.json,static/,dynamic/ (MCP manifests in dynamic/mcp/),src/ (read-only, symlinks removed)}
 # Everything copied back from the VM is untrusted: symlinks are deleted on the host after every copy.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -169,9 +169,14 @@ run)
   [ -n "$inst" ] && $L copy "$inst" "$vm:/tmp/install.sh" && vmsh "$vm" 'cp /tmp/install.sh /audit/scenario/install.sh'
   [ -n "$runs" ] && $L copy "$runs" "$vm:/tmp/run.sh" && vmsh "$vm" 'cp /tmp/run.sh /audit/scenario/run.sh'
   vmsh "$vm" "T_INSTALL=${T_INSTALL:-1200} T_RUN=${T_RUN:-300} /opt/audit/bin/dynamic.sh '$name'"
+  # keep the last run's MCP manifests as the baseline for the rug-pull diff (an unpinned npx/uvx server can change
+  # between two runs of the same commit)
+  if [ -d "$W/dynamic/mcp" ]; then rm -rf "$W/mcp-previous"; mv "$W/dynamic/mcp" "$W/mcp-previous"; fi
   rm -rf "$W/dynamic"
   $L copy -r "$vm:/audit/out/dynamic" "$W/"
   strip_links "$W/dynamic"
+  # MCP manifests vs the previous run / previous audit of this target: appended to the summary the reviewer reads
+  python3 -I host/mcp_diff.py "$HERE" "$id" >> "$W/dynamic/dynamic-summary.txt" || echo "MCP manifest diff failed" >&2
   mkdir -p "$W/scenario"; for f in "$inst" "$runs"; do [ -n "$f" ] && case "$(cd "$(dirname "$f")" && pwd)" in "$W/scenario"*) ;; *) cp "$f" "$W/scenario/" ;; esac; done
   echo "scenario used: auto ($W/scenario/auto/), then ${inst:-no tailored install} ${runs:-no tailored run}" | tee "$W/dynamic/scenario-used.txt"
   echo "results: $W/dynamic/dynamic-summary.txt"

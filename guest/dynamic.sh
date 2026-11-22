@@ -64,6 +64,8 @@ phase() { # name netmode timeout [scenario-script] [extra env, no spaces inside 
   # The phase ends when the scenario script exits (marker file), not when strace does: strace -f
   # would otherwise wait for any daemon the target left behind. Leftovers are recorded, then killed.
   local mark=/tmp/.audit-phase-rc-$ph; rm -f "$mark"
+  # mcp_probe.py saves each MCP server's manifest here (AUDIT_MCP_DIR); exported to $O/mcp/<phase>/ after the phase
+  local md=/tmp/.audit-mcp-$ph; rm -rf "$md"; install -d -m 700 -o sandbox -g sandbox "$md"
   # CI=1 keeps installers non-interactive. The run phase must look like a normal user session: code that
   # hides from analysis often goes quiet when it sees CI.
   local ci=; [ "$ph" = install ] && ci=CI=1
@@ -71,7 +73,7 @@ phase() { # name netmode timeout [scenario-script] [extra env, no spaces inside 
       -e trace=execve,connect,openat,unlinkat,renameat2 -o "$O/$ph.strace" -u sandbox -- \
       env -i HOME=/home/sandbox USER=sandbox LOGNAME=sandbox SHELL=/bin/bash LANG=C.UTF-8 TERM=xterm \
         PATH=/home/sandbox/.local/bin:/home/sandbox/go/bin:/usr/local/go/bin:/usr/local/node/bin:/usr/local/bin:/usr/bin:/bin \
-        UV_PYTHON=/usr/bin/python3.12 UV_PYTHON_DOWNLOADS=never $ci $PROXY_ENV $DECOY_ENV $extra \
+        UV_PYTHON=/usr/bin/python3.12 UV_PYTHON_DOWNLOADS=never AUDIT_MCP_DIR=$md $ci $PROXY_ENV $DECOY_ENV $extra \
         bash -c "bash /audit/scenario/auto-$script.sh; bash /audit/scenario/$script.sh; echo \$? > $mark" > "$O/$ph.stdout" 2> "$O/$ph.stderr" ) &
   local spid=$! rc=124 waited=0
   while [ $waited -lt "$tmo" ]; do
@@ -86,6 +88,11 @@ phase() { # name netmode timeout [scenario-script] [extra env, no spaces inside 
   sleep 10   # grace period: let anything it spawned show itself
   ps -u sandbox -o pid=,etimes=,args= > "$O/$ph.leftover" 2>/dev/null
   pkill -9 -u sandbox 2>/dev/null; sleep 1; kill $spid 2>/dev/null; wait $spid 2>/dev/null
+  # Manifests were written by the target's user: with its processes gone, copy only regular files, never following
+  # links (cp -P), size-capped; readers check them again (mcp_probe.load_records).
+  mkdir -p "$O/mcp/$ph"
+  find "$md" -maxdepth 1 -type f -name '*.json' -size -8M -exec cp -P -t "$O/mcp/$ph/" {} + 2>/dev/null
+  rm -rf "$md"; rmdir "$O/mcp/$ph" "$O/mcp" 2>/dev/null
   echo "{\"phase\":\"$ph\",\"exit\":$rc,\"seconds\":$((t1-t0)),\"timed_out\":$([ "$rc" = 124 ] && echo true || echo false)}" > "$O/$ph.meta.json"
   tail -c +$((dns0+1)) /var/log/audit/dns.log > "$O/$ph.dns.log"
   tail -c +$((px0+1)) /var/log/audit/proxy.log > "$O/$ph.proxy.log"

@@ -1,78 +1,358 @@
 #!/usr/bin/env python3
-"""Talk to a stdio MCP server like a client would: initialize, list tools/prompts/resources,
-optionally call tools with dummy arguments, print everything. Runs INSIDE the VM as 'sandbox'.
+"""Talk to a stdio MCP server like a client would: initialize, list tools/prompts/resources, optionally call tools
+with dummy arguments, list everything again, print it all. Runs INSIDE the VM as 'sandbox'.
 
-python3 -I /opt/audit/bin/mcp_probe.py [--call] [--timeout 60] -- <server command> [args...]
+python3 -I /opt/audit/bin/mcp_probe.py [--call] [--timeout 60] [--name NAME] [--out DIR] -- <server command> [args...]
+
+Manifest pinning (rug-pull check): what the server advertised is saved as canonical JSON (sorted keys; tools and
+prompts sorted by name, resources by uri) with its sha256, as DIR/<NAME>.json (DIR defaults to $AUDIT_MCP_DIR, which
+dynamic.sh sets per phase; nothing is saved when neither is given). The lists are fetched again after the tool calls,
+and again whenever the server sends notifications/{tools,prompts,resources}/list_changed, so a server that swaps its
+tools mid-session is recorded with a diff. analyze_dynamic.py summarises the saved manifests; host/mcp_diff.py diffs
+them against the previous audit of the same target.
+
+This file is also the library both of them use (canonical_manifest, digest, diff_manifests, describe_diff, safe,
+load_records): they load it by path, because python3 -I does not put the script's folder on sys.path.
 """
-import json, os, select, subprocess, sys, time
+import hashlib, json, os, re, select, stat, subprocess, sys, time
 
-args = sys.argv[1:]
-call = '--call' in args
-tmo = 60
-if '--timeout' in args:
-    tmo = int(args[args.index('--timeout') + 1])
-cmd = args[args.index('--') + 1:]
-p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr, bufsize=0)
-buf = b''
-deadline = time.time() + tmo
-
-
-def send(obj):
-    p.stdin.write((json.dumps(obj) + '\n').encode())
-    p.stdin.flush()
+KINDS = (('tools', 'name'), ('prompts', 'name'), ('resources', 'uri'))
+SCHEMA = 'plugin-audit/mcp-manifest'
+SCHEMA_VERSION = 1
+MAX_PAGES = 20               # nextCursor pages per list
+MAX_RECORD_BYTES = 8_000_000  # readers ignore bigger files (the target wrote them)
+# Same character set as HIDDEN_UNI in claude_checks.py (tests/test_mcp_manifest.py keeps them equal): ANSI escape,
+# Unicode tags, bidi controls, zero-width characters. In a tool description they hide text from a human reader.
+HIDDEN_UNI = re.compile('[\x1b\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\u180E]')
 
 
-def recv(want_id):
-    global buf
-    while time.time() < deadline:
-        while b'\n' in buf:
-            line, buf = buf.split(b'\n', 1)
+# ---------------- library ----------------
+def canonical_bytes(obj):
+    return json.dumps(obj, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+
+
+def _key(field, it):
+    return str(it.get(field)) if isinstance(it, dict) else ''
+
+
+def canonical_manifest(lists):
+    """{'tools': [...] | None, 'prompts': ..., 'resources': ...} with every list in a stable order.
+    None means the server did not answer that list (error or no reply), which is not the same as an empty list."""
+    out = {}
+    for kind, field in KINDS:
+        items = (lists or {}).get(kind)
+        out[kind] = None if items is None else sorted(items, key=lambda it: (_key(field, it), canonical_bytes(it)))
+    return out
+
+
+def digest(lists):
+    return hashlib.sha256(canonical_bytes(canonical_manifest(lists))).hexdigest()
+
+
+def _index(items, field):
+    idx, seen = {}, {}
+    for it in items:
+        it = it if isinstance(it, dict) else {'_value': it}
+        k = _key(field, it)
+        seen[k] = seen.get(k, 0) + 1
+        idx[k if seen[k] == 1 else f'{k}#{seen[k]}'] = it
+    return idx
+
+
+def diff_manifests(old, new):
+    """Per kind: added / removed names, changed items (with the fields that differ), or not_compared when only one
+    side has that list. Kinds without differences are left out, so an empty dict means identical."""
+    res = {}
+    for kind, field in KINDS:
+        a, b = (old or {}).get(kind), (new or {}).get(kind)
+        if a is None or b is None:
+            if (a is None) != (b is None):
+                res[kind] = {'not_compared': 'listed in only one of the two runs (no reply or an error in the other)'}
+            continue
+        ia, ib = _index(a, field), _index(b, field)
+        changed = []
+        for n in sorted(set(ia) & set(ib)):
+            if canonical_bytes(ia[n]) != canonical_bytes(ib[n]):
+                fields = sorted(k for k in set(ia[n]) | set(ib[n])
+                                if canonical_bytes(ia[n].get(k)) != canonical_bytes(ib[n].get(k)))
+                changed.append({'name': n, 'fields': fields, 'before': ia[n], 'after': ib[n]})
+        added, removed = sorted(set(ib) - set(ia)), sorted(set(ia) - set(ib))
+        if added or removed or changed:
+            res[kind] = {'added': added, 'removed': removed, 'changed': changed}
+    return res
+
+
+def is_change(diff):
+    """True if the diff shows a real difference (not just a list that could not be compared)."""
+    return any('not_compared' not in d for d in (diff or {}).values())
+
+
+def safe(s, n=300):
+    """Printable, single-line, length-capped text: control, escape and invisible characters become \\uXXXX."""
+    if not isinstance(s, str):
+        s = json.dumps(s, sort_keys=True, ensure_ascii=False)
+    s = ''.join(c if c.isprintable() and not HIDDEN_UNI.match(c) else f'\\u{ord(c):04x}' for c in s)
+    return s if len(s) <= n else s[:n] + '...'
+
+
+def describe_diff(diff, indent='    '):
+    lines = []
+    for kind, d in diff.items():
+        if 'not_compared' in d:
+            lines.append(f'{indent}{kind}: not compared ({d["not_compared"]})')
+            continue
+        parts = []
+        if d['added']:
+            parts.append(f'+{len(d["added"])} added {[safe(x, 80) for x in d["added"][:15]]}')
+        if d['removed']:
+            parts.append(f'-{len(d["removed"])} removed {[safe(x, 80) for x in d["removed"][:15]]}')
+        if d['changed']:
+            parts.append(f'~{len(d["changed"])} changed')
+        lines.append(f'{indent}{kind}: ' + '; '.join(parts))
+        for c in d['changed'][:15]:
+            lines.append(f'{indent}  ~ {kind}/{safe(c["name"], 80)}: {", ".join(safe(f, 40) for f in c["fields"])}')
+            for f in c['fields'][:4]:
+                lines.append(f'{indent}      {safe(f, 40)} before: {safe(c["before"].get(f), 300)}')
+                lines.append(f'{indent}      {safe(f, 40)} after:  {safe(c["after"].get(f), 300)}')
+    return lines
+
+
+def hidden_chars(lists):
+    """[(kind, item name, json path, 'U+XXXX')] for every string in the manifest holding a hidden/escape character."""
+    hits = []
+
+    def walk(kind, name, path, v):
+        if isinstance(v, str):
+            m = HIDDEN_UNI.search(v)
+            if m:
+                hits.append((kind, name, path, f'U+{ord(m.group()):04X}'))
+        elif isinstance(v, dict):
+            for k, x in v.items():
+                walk(kind, name, f'{path}.{k}' if path else str(k), x)
+        elif isinstance(v, list):
+            for i, x in enumerate(v):
+                walk(kind, name, f'{path}[{i}]', x)
+
+    for kind, field in KINDS:
+        for it in (lists or {}).get(kind) or []:
+            walk(kind, _key(field, it), '', it)
+    return hits
+
+
+def load_records(mcp_dir):
+    """{phase: {server key: record}} from <mcp_dir>/<phase>/<key>.json. Only regular files (no symlinks), size-capped,
+    with the expected schema and a sha256 that matches their own manifest; anything else is skipped."""
+    out = {}
+    try:
+        phases = sorted(os.listdir(mcp_dir))
+    except OSError:
+        return out
+    for ph in phases:
+        pdir = os.path.join(mcp_dir, ph)
+        if os.path.islink(pdir) or not os.path.isdir(pdir):
+            continue
+        for fn in sorted(os.listdir(pdir)):
+            if not fn.endswith('.json'):
+                continue
             try:
-                msg = json.loads(line)
-            except Exception:
-                print('[non-json stdout]', line[:200]); continue
-            if msg.get('id') == want_id:
-                return msg
-            print('[server message]', json.dumps(msg)[:300])
-        r, _, _ = select.select([p.stdout], [], [], 1)
-        if r:
-            chunk = os.read(p.stdout.fileno(), 65536)
-            if not chunk:
+                fd = os.open(os.path.join(pdir, fn), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(fd, 'rb') as f:
+                    if not stat.S_ISREG(os.fstat(fd).st_mode):
+                        continue
+                    raw = f.read(MAX_RECORD_BYTES + 1)
+                if len(raw) > MAX_RECORD_BYTES:
+                    continue
+                rec = json.loads(raw)
+            except (OSError, ValueError):
+                continue
+            if (isinstance(rec, dict) and rec.get('schema') == SCHEMA and isinstance(rec.get('manifest'), dict)
+                    and rec.get('sha256') == digest(rec['manifest'])):
+                out.setdefault(ph, {})[fn[:-5]] = rec
+    return out
+
+
+# ---------------- probe ----------------
+DUMMY = {'string': 'test', 'integer': 1, 'number': 1, 'boolean': False, 'array': [], 'object': {}}
+
+
+class Probe:
+    def __init__(self, cmd, tmo):
+        self.p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=sys.stderr, bufsize=0)
+        self.buf = b''
+        self.deadline = time.time() + tmo
+        self.next_id = 1
+        self.step = 'initialize'
+        self.pending = set()   # kinds the server said changed (list_changed), not yet re-listed
+        self.notices = []      # every list_changed notification: {'method', 'during'}
+
+    def send(self, obj):
+        try:
+            self.p.stdin.write((json.dumps(obj) + '\n').encode())
+            self.p.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+
+    def request(self, method, params, grace=0):
+        i = self.next_id
+        self.next_id += 1
+        self.send({'jsonrpc': '2.0', 'id': i, 'method': method, 'params': params})
+        return self.recv(i, max(self.deadline, time.time() + grace))
+
+    def recv(self, want_id, deadline):
+        while time.time() < deadline:
+            while b'\n' in self.buf:
+                line, self.buf = self.buf.split(b'\n', 1)
+                try:
+                    msg = json.loads(line)
+                except ValueError:
+                    print('[non-json stdout]', safe(line.decode('utf-8', 'replace'), 200))
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                method = msg.get('method')
+                if 'method' not in msg and msg.get('id') == want_id:
+                    return msg
+                if isinstance(method, str) and re.fullmatch(r'notifications/(tools|prompts|resources)/list_changed', method):
+                    self.pending.add(method.split('/')[1])
+                    self.notices.append({'method': method, 'during': self.step})
+                elif 'id' in msg and isinstance(method, str):   # a request from the server: answer so it does not hang
+                    self.send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {}} if method == 'ping' else
+                              {'jsonrpc': '2.0', 'id': msg['id'], 'error': {'code': -32601, 'message': 'not supported by the audit probe'}})
+                print('[server message]', safe(json.dumps(msg), 300))
+            if len(self.buf) > 64_000_000:
                 return None
-            buf += chunk
+            r, _, _ = select.select([self.p.stdout], [], [], max(0, min(1, deadline - time.time())))
+            if r:
+                chunk = os.read(self.p.stdout.fileno(), 65536)
+                if not chunk:
+                    return None
+                self.buf += chunk
+        return None
+
+    def list_kind(self, kind, grace=0):
+        items, cursor = [], None
+        for _ in range(MAX_PAGES):
+            r = self.request(f'{kind}/list', {'cursor': cursor} if cursor else {}, grace)
+            res = (r or {}).get('result')
+            page = res.get(kind) if isinstance(res, dict) else None
+            if not isinstance(page, list):
+                return items or None
+            items += page
+            cursor = res.get('nextCursor')
+            if not isinstance(cursor, str) or not cursor:
+                break
+        return items
+
+    def list_all(self, grace=0):
+        return {kind: self.list_kind(kind, grace) for kind, _ in KINDS}
+
+    def close(self):
+        self.p.terminate()
+        try:
+            self.p.wait(5)
+        except Exception:
+            self.p.kill()
+
+
+def server_key(name, cmd):
+    key = name or (os.path.basename(cmd[0]) + '-' + hashlib.sha256(canonical_bytes(cmd)).hexdigest()[:8])
+    key = re.sub(r'[^A-Za-z0-9._-]', '_', key)[:64].lstrip('.')
+    return key or 'server'
+
+
+def save(out_dir, key, record):
+    """Write <out_dir>/<key>.json without following or overwriting anything already there (-2, -3... on clashes)."""
+    os.makedirs(out_dir, exist_ok=True)
+    data = json.dumps(record, sort_keys=True, indent=1, ensure_ascii=True) + '\n'
+    for n in range(1, 21):
+        path = os.path.join(out_dir, f'{key}.json' if n == 1 else f'{key}-{n}.json')
+        try:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, 'O_NOFOLLOW', 0), 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, 'w') as f:
+            f.write(data)
+        return path
     return None
 
 
-send({'jsonrpc': '2.0', 'id': 1, 'method': 'initialize', 'params': {
-    'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'audit-probe', 'version': '1'}}})
-init = recv(1)
-print('INITIALIZE:', json.dumps(init)[:1500])
-if not init:
-    p.kill(); sys.exit(1)
-send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
-tools = []
-for i, m in enumerate(('tools/list', 'prompts/list', 'resources/list'), start=2):
-    send({'jsonrpc': '2.0', 'id': i, 'method': m, 'params': {}})
-    r = recv(i)
-    res = (r or {}).get('result') or {}
-    items = res.get(m.split('/')[0]) or []
-    print(f'{m.upper()}: {len(items)}')
-    for it in items:
-        print('  -', it.get('name') or it.get('uri'), '|', (it.get('description') or '').replace('\n', ' ')[:600])
-        if m == 'tools/list':
-            tools.append(it)
-if call:
-    for n, t in enumerate(tools[:25], start=100):
-        props = ((t.get('inputSchema') or {}).get('properties') or {})
-        dummy = {}
-        for k, v in props.items():
-            ty = v.get('type') if isinstance(v, dict) else 'string'
-            dummy[k] = {'string': 'test', 'integer': 1, 'number': 1, 'boolean': False, 'array': [], 'object': {}}.get(ty, 'test')
-        send({'jsonrpc': '2.0', 'id': n, 'method': 'tools/call', 'params': {'name': t['name'], 'arguments': dummy}})
-        r = recv(n)
-        print(f'CALL {t["name"]}({json.dumps(dummy)[:120]}) ->', json.dumps(r)[:400] if r else 'no reply')
-p.terminate()
-try:
-    p.wait(5)
-except Exception:
-    p.kill()
+def main(argv):
+    if '--' not in argv:
+        sys.exit(__doc__)
+    opts, cmd = argv[:argv.index('--')], argv[argv.index('--') + 1:]
+    if not cmd:
+        sys.exit(__doc__)
+
+    def opt(flag, default=None):
+        return opts[opts.index(flag) + 1] if flag in opts and opts.index(flag) + 1 < len(opts) else default
+
+    call, tmo = '--call' in opts, int(opt('--timeout', 60))
+    out_dir = opt('--out') or os.environ.get('AUDIT_MCP_DIR')
+    key = server_key(opt('--name'), cmd)
+    pr = Probe(cmd, tmo)
+    try:
+        init = pr.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {},
+                                         'clientInfo': {'name': 'audit-probe', 'version': '1'}})
+        print('INITIALIZE:', safe(json.dumps(init), 1500))
+        if not init:
+            return 1
+        pr.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        pr.step = 'first listing'
+        first = pr.list_all()
+        for kind, _ in KINDS:
+            items = first[kind]
+            print(f'{kind.upper()}/LIST: {len(items) if items is not None else "no answer"}')
+            for it in items or []:
+                it = it if isinstance(it, dict) else {}
+                print('  -', safe(it.get('name') or it.get('uri'), 120), '|', safe(it.get('description') or '', 600))
+        result = (init.get('result') if isinstance(init.get('result'), dict) else {}) or {}
+        record = {'schema': SCHEMA, 'schema_version': SCHEMA_VERSION, 'server_key': key, 'command': cmd,
+                  'server_info': result.get('serverInfo'), 'protocol_version': result.get('protocolVersion'),
+                  'capabilities': result.get('capabilities'), 'manifest': canonical_manifest(first),
+                  'sha256': digest(first), 'relists': [], 'list_changed': pr.notices}
+        print(f'MANIFEST {key}: sha256 {record["sha256"]}')
+        current = first
+
+        def relist(reason, grace=0):
+            nonlocal current
+            pr.pending.clear()
+            new = pr.list_all(grace)
+            new = {k: (new[k] if new[k] is not None else current[k]) for k, _ in KINDS}   # keep the last known list
+            d = diff_manifests(current, new)
+            record['relists'].append({'reason': reason, 'sha256': digest(new), 'changed': is_change(d), 'diff': d,
+                                      'manifest': canonical_manifest(new) if d else None})
+            print(f'RELIST ({reason}): sha256 {digest(new)} ' + ('CHANGED' if is_change(d) else 'unchanged'))
+            for line in describe_diff(d):
+                print(line)
+            current = new
+
+        if pr.pending:
+            relist('list_changed during the first listing')
+        if call:
+            tools = [t for t in first['tools'] or [] if isinstance(t, dict) and isinstance(t.get('name'), str)]
+            for t in tools[:25]:
+                schema = t.get('inputSchema') if isinstance(t.get('inputSchema'), dict) else {}
+                props = schema.get('properties') if isinstance(schema.get('properties'), dict) else {}
+                dummy = {}
+                for k, v in props.items():
+                    ty = v.get('type') if isinstance(v, dict) else None
+                    dummy[k] = DUMMY.get(ty, 'test') if isinstance(ty, str) else 'test'
+                pr.step = f'call {t["name"]}'
+                r = pr.request('tools/call', {'name': t['name'], 'arguments': dummy})
+                print(f'CALL {safe(t["name"], 80)}({safe(json.dumps(dummy), 120)}) ->', safe(json.dumps(r), 400) if r else 'no reply')
+                if pr.pending:
+                    relist(f'list_changed during {pr.step}')
+        pr.step = 'final listing'
+        relist('after the tool calls' if call else 'end of session', grace=15)
+        record['final_sha256'] = digest(current)
+        record['swapped_mid_session'] = any(r['changed'] for r in record['relists'])
+        if out_dir:
+            path = save(out_dir, key, record)
+            print(f'MANIFEST saved: {path}' if path else f'MANIFEST not saved: {out_dir} has too many {key}*.json')
+        return 0
+    finally:
+        pr.close()
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

@@ -51,6 +51,9 @@ jobs:
       - name: static checks + baseline scenario flag the positive-control fixture
         run: python3 -I tests/static_selftest.py
 
+      - name: VM-free unit tests (tests/test_*.py)
+        run: for t in tests/test_*.py; do python3 -I "$t" || exit 1; done
+
   secrets:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

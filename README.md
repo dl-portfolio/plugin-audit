@@ -79,7 +79,7 @@ full of decoy credentials with the network sinkholed, and reports what it actual
 | 2. Static scan | Own rules + gitleaks, osv-scanner, semgrep, SkillSpector, Cisco skill-scanner, as a user with no network | `static/static-summary.txt` |
 | 3. Scenario | Write `install.sh` + `run.sh`: how a user would install and use it ([explained below](#-what-is-a-scenario)) | `scenario/` |
 | 4. Runtime test | Run the scenario in three phases (below) with decoys and the sinkhole | `dynamic/dynamic-summary.txt` |
-| 5. Review | A read-only LLM checks the code against both summaries and writes the verdict | `reports/<id>.md` |
+| 5. Review | A read-only LLM checks the code against both summaries and writes the verdict | `reports/<id>.md`, `.json`, `.sarif` |
 
 Runtime phases:
 
@@ -185,6 +185,7 @@ from secondary sources pending the official PDF.</sub>
 |---|---|
 | [`reports/README.md`](reports/README.md) | The index: one row per tool with its verdict and a link |
 | `reports/<id>.md` | The full report for one tool at one commit |
+| `reports/<id>.json`, `reports/<id>.sarif` | The same verdict and findings for machines: a [versioned, schema-checked JSON](docs/verdict-schema.md) and SARIF 2.1.0 for code-scanning tools (reports published before this format have Markdown only) |
 | `work/<id>/` (local only, git-ignored) | Raw scanner output, scenario, runtime logs |
 
 | Verdict | Count | What it meant in practice |
@@ -208,7 +209,7 @@ macOS-only branch, which only the run-darwin phase triggers.
 |---|---|---|
 | **Target code** | Run in the VM as `sandbox` (no sudo); reach package registries, `github.com` and GitHub's download hosts during install | Reach the host, the internet in run phases, other hosts at install (e.g. `api.github.com`, `gist.github.com`), or any real secret |
 | **Scenario LLM** (headless Claude) | Read `work/<id>/` (target as data); write `scenario/install.sh`, `run.sh`, `notes.txt` | Read or write outside `work/<id>/`, run commands, use the web, start subagents, skip the baseline scenario |
-| **Review LLM** (headless Claude) | Read `work/<id>/`; write `work/<id>/report.md` and `index-row.md` | Read or write outside `work/<id>/` (so no host files, no other reports), run commands, use the web, start subagents. `host/publish_report.py` refuses output that looks like a secret or a host path |
+| **Review LLM** (headless Claude) | Read `work/<id>/`; write `work/<id>/report.md`, `index-row.md` and `report.json` | Read or write outside `work/<id>/` (so no host files, no other reports), run commands, use the web, start subagents. `host/publish_report.py` refuses output that looks like a secret or a host path, and a `report.json` that breaks [its schema](docs/verdict-schema.md) or disagrees with the audit's own metadata |
 | **Scanners** | Read the source copy as user `auditor` | Reach the network |
 | **Anthropic** (model provider) | Receives the parts of the target the LLMs read | — so don't audit code you may not share with your provider |
 
@@ -252,6 +253,7 @@ Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issu
 | Agent run for prompt-only skills | 💡 Designed | See what a skill makes an agent do | [#5](https://github.com/dl-portfolio/plugin-audit/issues/5) |
 | **Linux host support** (QEMU/KVM, amd64 + arm64) | 💡 Designed | Run it on any Linux workstation or CI runner | [#4](https://github.com/dl-portfolio/plugin-audit/issues/4) |
 | Verify scanner archives by checksum | ✅ Done | Closes a supply-chain gap in the auditor itself | [#8](https://github.com/dl-portfolio/plugin-audit/issues/8) |
+| Verdict JSON and SARIF output | ✅ Done | Diffs between audits, badges, CI gates, code-scanning upload | [#13](https://github.com/dl-portfolio/plugin-audit/issues/13) |
 | Real macOS guest VM | 🧊 Manual only | Native Mac malware; days of work, licence limits | [#6](https://github.com/dl-portfolio/plugin-audit/issues/6) |
 
 <details>
@@ -326,7 +328,7 @@ Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issu
 
 | Command | What it does |
 |---|---|
-| `./audit <target> [ref]` | Everything, end to end; writes `reports/<id>.md` |
+| `./audit <target> [ref]` | Everything, end to end; writes `reports/<id>.md`, `.json` and `.sarif` |
 | `/audit <target>` (in Claude Code) | Same, but you review the scenario together |
 | `/audit <id>` (in Claude Code) | Re-do only the review and report for an existing audit |
 | `./audit.sh new <target> [ref]` | Clone VM, fetch, static scan, baseline scenario; prints the ID |
@@ -345,7 +347,7 @@ The **ID** is `<name>-<first 7 chars of the commit>`. A verdict is valid for tha
 | `static/static-summary.txt` | All scanners condensed; raw JSON alongside |
 | `scenario/auto/` | Generic baseline `install.sh`, `run.sh`, `notes.txt` |
 | `scenario/install.sh`, `run.sh`, `notes.txt` | Tailored or hand-written scenario (runs after the baseline) |
-| `report.md`, `index-row.md` | Reviewer output before `host/publish_report.py` copies it to `reports/` |
+| `report.md`, `index-row.md`, `report.json` | Reviewer output before `host/publish_report.py` checks it and writes `reports/<id>.md`, `.json` and `.sarif` |
 | `dynamic/dynamic-summary.txt` | What happened at runtime, per phase; logs alongside |
 | `dynamic/mcp/<phase>/<server>.json` | Each probed MCP server's manifest (tools, prompts, resources) as canonical JSON with its sha256, re-listings and `list_changed` notices; `dynamic/mcp-diff.json` diffs it against the previous audit of the same target |
 | `mcp-previous/` | The manifests of the previous `audit.sh run` of this audit (baseline for the diff) |
@@ -370,6 +372,7 @@ the VM; `./audit` deletes it at the end).
 | MCP probe, manifest format and diff | `guest/mcp_probe.py` (also the library `analyze_dynamic.py` and `host/mcp_diff.py` load), `host/mcp_diff.py` | No |
 | Runtime phase | `phase` in `guest/dynamic.sh`, mode in `guest/netmode.sh`, phase list in `guest/analyze_dynamic.py` | No |
 | Report format, verdict rubric | `.claude/skills/audit/SKILL.md` | No |
+| Verdict JSON fields, SARIF mapping | `docs/verdict-schema.md` and the checks in `host/publish_report.py` (new field = new `schema_version`) | No |
 | README graphics | `docs/assets/generate.py`, then run it | No |
 
 After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with decoy reads, refused exfil hosts,
@@ -404,7 +407,7 @@ and the unit tests (`for t in tests/test_*.py; do python3 -I "$t"; done`).
 |---|---|---|
 | `audit` | One-command entry point | Host |
 | `audit.sh` | Steps: `base`, `new`, `run`, `copies`, `destroy` | Host |
-| `host/publish_report.py` | Checks the reviewer's output for secrets and host paths, then writes `reports/` | Host |
+| `host/publish_report.py` | Checks the reviewer's output for secrets and host paths and validates its verdict JSON, then writes `reports/` (Markdown, JSON, SARIF) | Host |
 | `vm/` | Base VM template, one-time provisioning, hash-locked semgrep requirements | Host → VM |
 | `guest/static.sh`, `claude_checks.py`, `summarize_static.py` | Static scan | VM (`auditor`) |
 | `guest/auto_scenario.py` | Baseline scenario | VM (`auditor`) |
@@ -419,6 +422,7 @@ and the unit tests (`for t in tests/test_*.py; do python3 -I "$t"; done`).
 | `scanner-vetting.md` | Why each scanner is trusted | Docs |
 | `reports/` | Reports and index (tool output) | Docs |
 | `docs/assets/` | README graphics and their generator | Docs |
+| `docs/verdict-schema.md` | The verdict JSON schema and SARIF mapping | Docs |
 
 ## 📄 License
 [Apache License 2.0](LICENSE). Copyright 2026 Daniel Lennart ([NOTICE](NOTICE)).

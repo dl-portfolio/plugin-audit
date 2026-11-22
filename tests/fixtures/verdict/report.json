@@ -1,0 +1,51 @@
+{
+  "schema": "plugin-audit/verdict",
+  "schema_version": 1,
+  "audit_id": "example-tool-1a2b3c4",
+  "tool": "owner/example-tool",
+  "commit": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+  "verdict": "USE WITH PRECAUTIONS",
+  "summary": "No malware. Telemetry is on by default and the MCP server is fetched unpinned with npx.\nPin it and opt out.",
+  "dates": {
+    "scanned": "2026-11-20T09:15:02Z",
+    "reviewed": "2026-11-20"
+  },
+  "findings": [
+    {
+      "id": "F1",
+      "severity": "medium",
+      "category": "telemetry",
+      "title": "Usage analytics sent to a third party by default",
+      "detail": "Every command reports its name and duration; opt out with EXAMPLE_TELEMETRY=0.",
+      "evidence": "lib/telemetry.js:2 posts to analytics.example.net; run phase: DNS query analytics.example.net refused",
+      "location": {
+        "path": "lib/telemetry.js",
+        "line": 2
+      },
+      "matches_stated_purpose": false
+    },
+    {
+      "id": "F2",
+      "severity": "medium",
+      "category": "supply-chain",
+      "title": "MCP server fetched with unpinned npx",
+      "evidence": ".mcp.json: npx -y example-mcp",
+      "location": {
+        "path": ".mcp.json"
+      }
+    },
+    {
+      "id": "F3",
+      "severity": "info",
+      "title": "No install scripts",
+      "evidence": "static summary: install-hook none"
+    }
+  ],
+  "precautions": [
+    "Set EXAMPLE_TELEMETRY=0",
+    "Pin the MCP package to the audited version"
+  ],
+  "not_covered": [
+    "The Docker image (no Docker in the VM)"
+  ]
+}

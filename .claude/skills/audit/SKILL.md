@@ -36,7 +36,7 @@ Users can also run the whole thing without you: `./audit <target>` (same steps; 
    - supply chain: pinned deps/lockfile, MAL- packages, unpinned npx/uvx/latest, auto-update mechanisms, curl|bash installers, release binaries not built from source
    - runtime: decoy reads (which process), refused hosts, DNS names, direct-egress attempts, persistence, leftover processes - and whether each matches the stated purpose
    It must return findings with severity, evidence (file:line or log line), and "matches stated purpose: yes/no".
-5. **Report**: write `reports/<id>.md` with the template below, then add/refresh its row in `reports/README.md` (headless `./audit` writes `work/<id>/report.md` and `index-row.md` instead, and `host/publish_report.py` publishes them). Show the user the verdict line and the 3-5 most important points.
+5. **Report**: write three files in `work/<id>/` (never in `reports/` directly): `report.md` with the template below, `index-row.md` with its one index row (`| <owner/repo> | **<VERDICT>** | <one line> | [<id>](<id>.md) |`), and `report.json`, the same verdict and findings in the machine-readable format of `docs/verdict-schema.md` (headless: `VERDICT-SCHEMA.md` in the audit folder; `tool`, `commit` and `dates.scanned` come from `meta.json`). Then run `python3 -I host/publish_report.py "$PWD" <id>`: it is the only thing that writes `reports/` (`<id>.md`, `<id>.json`, `<id>.sarif` and the index row) and refuses output with secrets, host paths or a `report.json` that breaks the schema; fix what it names and run it again (headless `./audit` runs it for you). Show the user the verdict line and the 3-5 most important points.
 6. **Clean up**: `./audit.sh destroy <id>` (keeps `work/<id>/` results).
 
 ## Verdict rubric
@@ -72,4 +72,5 @@ Commit `<sha>` · audited <date> · <one-line what it is>
 *This verdict applies only to the commit above and reflects our reading of the code at that commit. Maintainers can dispute a finding or ask for a re-audit by opening an issue: https://github.com/dl-portfolio/plugin-audit/issues*
 ```
 State findings as what the code at that commit does, with evidence; never quote a live-looking third-party secret or its exact line.
+Every row of the Findings table is also a finding in `report.json` (same severity; `location.path` relative to the target's root, i.e. without `src/`, only when it names a real file there).
 Write dates as absolute dates ("repo created 2026-11-06"), never relative ages ("2 days old") that go stale.

@@ -17,7 +17,10 @@ cd "$(dirname "$0")"
 HERE=$PWD
 L=limactl
 
-die() { echo "error: $*" >&2; exit 1; }
+# Target-controlled names (folder names, paths inside the target) are filtered through this before they reach the
+# terminal, so escape sequences in a hostile name cannot drive it.
+clean() { LC_ALL=C tr -cd '[:print:]\n'; }
+die() { echo "error: $*" | clean >&2; exit 1; }
 vmsh() { $L shell --workdir / "$1" sudo bash -c "$2" 2> >(grep -v 'unable to resolve host' >&2); }
 
 # commit SHA for a ref on a git remote: annotated tags resolve to the commit they point at (the ^{} line)
@@ -102,9 +105,17 @@ new)
     kind=git; name=$(basename "${target%.git}"); label=$target
   else die "target must be a GitHub URL, https git URL or local directory"; fi
   id=$(echo "${name}-${sha:0:7}" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9.\n-' '-')
-  vm="aud-${sha:0:7}"
-  W="$HERE/work/$id"; mkdir -p "$W"
-  echo "== $label @ ${sha} -> $id (vm $vm)"
+  # VM named after the audit ID, not just the commit, so a fork and its upstream at the same commit don't delete each
+  # other's VM. Lima wants letters/digits with single '-' between them; the name part is capped to keep it short.
+  n=$(printf '%s' "${id%-*}" | tr -c 'a-z0-9' '-' | tr -s '-'); n=${n#-}; n=${n:0:40}; n=${n%-}
+  vm="aud-${n:+$n-}${sha:0:7}"
+  W="$HERE/work/$id"
+  if [ -f "$W/meta.json" ]; then   # same name + commit from a different source (e.g. fork vs upstream): don't clobber it
+    prev=$(python3 -I -c 'import json,sys;print(json.load(open(sys.argv[1]))["label"])' "$W/meta.json")
+    [ "$prev" = "$label" ] || die "work/$id already holds an audit of $prev; move it (and destroy its VM) first"
+  fi
+  mkdir -p "$W"
+  echo "== $label @ ${sha} -> $id (vm $vm)" | clean
   $L list -q | grep -qx "$vm" && { $L stop "$vm" 2>/dev/null || true; $L delete -f "$vm"; }
   $L clone --tty=false audit-base "$vm" >/dev/null
   $L start --tty=false "$vm" >/dev/null
@@ -115,7 +126,7 @@ new)
     tar)    tar -C "$target" --no-mac-metadata --no-xattrs --exclude .git -cf "$W/upload.tar" . && $L copy "$W/upload.tar" "$vm:/tmp/upload.tar" && rm "$W/upload.tar"
             vmsh "$vm" "/opt/audit/bin/fetch.sh tar /tmp/upload.tar" ;;
   esac
-  vmsh "$vm" '/opt/audit/bin/static.sh' | tail -30
+  vmsh "$vm" '/opt/audit/bin/static.sh' | clean | tail -30
   # default runtime scenario from the target's manifests (read as data, as the no-network auditor user)
   vmsh "$vm" 'runuser -u auditor -- python3 -I /opt/audit/bin/auto_scenario.py /audit/src /audit/out/scenario-auto'
   # export: scanner results + a copy of the source with all symlinks removed (listed in symlinks.txt).
@@ -167,7 +178,7 @@ run)
   ;;
 
 copies) # rebuild review-copies/ for an existing audit
-  review_copies "$HERE/work/${1:?id}"; cat "$HERE/work/$1/review-copies/INDEX.txt" 2>/dev/null || echo "(none)"
+  review_copies "$HERE/work/${1:?id}"; { clean < "$HERE/work/$1/review-copies/INDEX.txt"; } 2>/dev/null || echo "(none)"
   ;;
 
 destroy)

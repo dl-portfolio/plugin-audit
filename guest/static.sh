@@ -6,7 +6,8 @@ A=/opt/audit; SRC=/audit/src; O=/audit/out/static
 /opt/audit/bin/netmode.sh closed >/dev/null
 rm -rf "$O"; mkdir -p "$O"; chown -R auditor:auditor /audit/out
 as() { runuser -u auditor -- env -i HOME=/home/auditor PATH=/usr/local/bin:/usr/bin:/bin LANG=C.UTF-8 "$@"; }
-log() { echo "[$(date +%T)] $*" | tee -a "$O/static.log"; }
+# log lines carry target folder names: drop non-printable bytes so escape sequences can't reach the terminal
+log() { echo "[$(date +%T)] $*" | LC_ALL=C tr -cd '[:print:]\n' | tee -a "$O/static.log"; }
 
 log "claude_checks"
 as python3 -I $A/bin/claude_checks.py "$SRC" "$O/claude_checks.json" >>"$O/static.log" 2>&1 || log "claude_checks failed"

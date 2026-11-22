@@ -75,10 +75,13 @@ phase() { # name netmode timeout [scenario-script] [extra env, no spaces inside 
         bash -c "bash /audit/scenario/auto-$script.sh; bash /audit/scenario/$script.sh; echo \$? > $mark" > "$O/$ph.stdout" 2> "$O/$ph.stderr" ) &
   local spid=$! rc=124 waited=0
   while [ $waited -lt "$tmo" ]; do
-    [ -s "$mark" ] && { rc=$(cat "$mark"); break; }
-    kill -0 $spid 2>/dev/null || { rc=$( [ -s "$mark" ] && cat "$mark" || echo 125 ); break; }
+    [ -s "$mark" ] && { rc=$(head -c 8 "$mark"); break; }
+    kill -0 $spid 2>/dev/null || { rc=$( [ -s "$mark" ] && head -c 8 "$mark" || echo 125 ); break; }
     sleep 2; waited=$((waited+2))
   done
+  # The target runs as the user that writes the marker, so it can rewrite it (or swap in a symlink): only a plain exit
+  # code goes into $ph.meta.json; anything else is recorded as -1.
+  [[ "$rc" =~ ^[0-9]{1,3}$ ]] || { log "  exit marker is not an exit code (rewritten by the target?)"; rc=-1; }
   local t1; t1=$(date +%s)
   sleep 10   # grace period: let anything it spawned show itself
   ps -u sandbox -o pid=,etimes=,args= > "$O/$ph.leftover" 2>/dev/null

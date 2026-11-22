@@ -53,7 +53,7 @@ if isinstance(pkg, dict):
     for name, path in (bins or {}).items() if isinstance(bins, dict) else []:
         run += [f'{T} node {q(str(path))} --help || true', f'{T} node {q(str(path))} --version || true']
     if not bins and isinstance(pkg.get('main'), str):
-        run.append(f'{T} node -e {q("require(" + json.dumps("./" + pkg["main"].lstrip("./")) + ")")} || true')
+        run.append(f'{T} node -e {q("require(" + json.dumps("./" + pkg["main"].removeprefix("./")) + ")")} || true')
     notes.append('node: dependencies installed (install scripts run), bins called with --help/--version')
 
 # ---------- Python ----------

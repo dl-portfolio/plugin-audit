@@ -302,9 +302,11 @@ Context for contributors: [#9](https://github.com/dl-portfolio/plugin-audit/issu
    ./audit tests/fixture-malicious
    ```
 3. Install [Claude Code](https://code.claude.com) and run `claude` once to log in.
-4. Optional, to use `/audit` from other projects: edit the repo path in `.claude/skills/audit/SKILL.md`, then link it:
+4. Optional, to use `/audit` from other projects: edit the repo path in `.claude/skills/audit/SKILL.md`, then link it
+   and its read-only reviewer agent:
    ```bash
    ln -s "$PWD/.claude/skills/audit" ~/.claude/skills/audit
+   mkdir -p ~/.claude/agents && ln -s "$PWD/.claude/agents/audit-reviewer.md" ~/.claude/agents/audit-reviewer.md
    ```
 
 > [!TIP]
@@ -374,7 +376,8 @@ After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with de
 |---|---|
 | `limactl list` shows VMs as Broken / "operation not permitted" inside Claude Code | Sandbox side effect: run it with the sandbox disabled. The VMs are fine |
 | VM start right after a stop times out | `audit.sh run` retries once; re-run the step if it still fails |
-| Leftover `aud-*` VMs after an interrupted run | `./audit.sh destroy <id>` or `limactl delete -f aud-xxxxxxx` |
+| Leftover `aud-*` VMs after an interrupted run | `./audit.sh destroy <id>` or `limactl delete -f aud-<name>-<sha7>` (`limactl list` shows them) |
+| `work/<id> already holds an audit of ...` | Another source with the same name and commit (e.g. fork vs upstream) was audited before: `./audit.sh destroy <id>`, then move `work/<id>/` away |
 | `osv exit 128` in the static log | No lockfile found; see [#3](https://github.com/dl-portfolio/plugin-audit/issues/3) for when that is wrong |
 | No report written | Results are in `work/<id>/`; run `/audit <id>` in Claude Code |
 | "Files hidden by deny rules" in a report | `./audit.sh copies <id>`, then `/audit <id>` |
@@ -404,6 +407,7 @@ After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with de
 | `guest/darwin_preload.js`, `darwin_sitecustomize.py`, `macstub.sh` | macOS impersonation | VM (`sandbox`) |
 | `.claude/skills/audit/SKILL.md` | `/audit` skill: steps, rules, rubric, report template | Claude Code |
 | `tests/fixture-malicious/` | Positive control | VM only |
+| `.claude/agents/audit-reviewer.md` | `/audit` review subagent, limited to Read, Grep and Glob | Claude Code |
 | `scanner-vetting.md` | Why each scanner is trusted | Docs |
 | `reports/` | Reports and index (tool output) | Docs |
 | `docs/assets/` | README graphics and their generator | Docs |

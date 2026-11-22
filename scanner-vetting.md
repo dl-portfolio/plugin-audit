@@ -192,7 +192,7 @@ Neither skill scanner handles these.
   open network.
 - Scans run as the `auditor` user: nftables lets it reach loopback only, DNS answers nothing, the target is a copy,
   and no API keys or host files are present.
-- Before results leave the VM, every `auditor` process is killed, `/audit/out` goes back to root, symlinks are removed, and the source copy is packed in a root-only folder; the host deletes any symlink again after each copy.
+- Before results leave the VM, every `auditor` process is killed, `/audit/out` goes back to root, symlinks are removed, and the source copy is packed in a folder only root can write; the host deletes any symlink again after each copy.
 - So even a compromised scanner dependency could only tamper with scan results, not reach the host or its secrets.
 - That is why the verdict comes from several sources: two scanners, our own checks and a manual read.
 

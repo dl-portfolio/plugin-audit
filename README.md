@@ -155,7 +155,7 @@ What a malicious extension could try, mapped to [MITRE ATT&CK](https://attack.mi
 | Injection aimed at the reviewer or scenario writer | — | AML.T0051.001 · LLM01 | LLMs confined to `work/<id>/`: no shell/network, no reads elsewhere, output-only writes; secrets/host-path check before publishing; planted text is reported | A fooled reviewer can misjudge severity |
 | Rug pull after review | — | AML.T0109 · ASI04 | Verdict pinned to a commit; unpinned installs flagged | Re-audit before every update |
 | Compromised scanner or toolchain | T1195.001 | LLM03 | Vetted, pinned by version + sha256 (scanner archives and semgrep's dependencies included), ≥ 2 weeks old, run without network; killed before export | The OSV database is a live feed by design |
-| Attack on the host through the pipeline (archives, symlinks, git) | — | — | Unpacked inside the VM; exported from a root-only folder after scanners are killed; symlinks stripped in the VM and again on the host; git never parses the target on the host; target and ref validated and quoted before reaching the VM's root shell | — |
+| Attack on the host through the pipeline (archives, symlinks, git) | — | — | Unpacked inside the VM; exported from a folder only root can write, after scanners are killed; symlinks stripped in the VM and again on the host; git never parses the target on the host; target and ref validated and quoted before reaching the VM's root shell | — |
 
 <sub>ATT&CK IDs checked on attack.mitre.org; ATLAS IDs from MITRE's `atlas-data` release; OWASP Agentic (ASI) names
 from secondary sources pending the official PDF.</sub>

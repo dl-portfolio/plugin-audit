@@ -120,11 +120,11 @@ new)
   vmsh "$vm" 'runuser -u auditor -- python3 -I /opt/audit/bin/auto_scenario.py /audit/src /audit/out/scenario-auto'
   # export: scanner results + a copy of the source with all symlinks removed (listed in symlinks.txt).
   # Stop every scanner process first and take /audit/out back to root, so nothing can swap files during the export;
-  # the source tar is built in a root-only folder.
+  # the source tar is built in a folder only root can write (readable, so limactl copy can fetch it).
   vmsh "$vm" 'pkill -9 -u auditor 2>/dev/null; sleep 1; chown -R root:root /audit/out; chmod -R u+rwX,go+rX,go-w /audit/out
     find /audit/out -type l -delete
     cd /audit && find src -type l -printf "%p -> %l\n" > out/static/symlinks.txt
-    rm -rf /audit/export; install -d -m 700 /audit/export
+    rm -rf /audit/export; install -d -m 755 -o root -g root /audit/export
     find src ! -type l -print0 | tar --null --no-recursion -T - -cf /audit/export/src.tar; chmod 644 /audit/export/src.tar'
   chmod -R u+w "$W/src" 2>/dev/null || true; rm -rf "$W/static" "$W/src" "$W/scenario/auto"; mkdir -p "$W/src" "$W/scenario"
   $L copy -r "$vm:/audit/out/static" "$W/"

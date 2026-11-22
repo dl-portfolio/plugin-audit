@@ -25,7 +25,11 @@ SECRET_PATTERNS = [
 ]
 VERDICTS = ('DO NOT USE', 'USE WITH PRECAUTIONS', 'SAFE TO USE')   # most specific first
 TOOL_HEADER = '| Tool | Verdict | One line | Report |'
-FIXTURE = 'tests/fixture-malicious'
+FIXTURE = 'tests/fixture-malicious'   # the positive control: one row, kept last, never counted
+
+
+def is_fixture(tool):
+    return 'fixture-malicious' in tool
 
 
 def fail(msg):
@@ -65,13 +69,19 @@ def update_index(index, row, rid):
     while end < len(lines) and lines[end].startswith('|'):
         end += 1
     rows = [r for r in lines[h + 2:end] if f']({rid}.md)' not in r]
-    rows.insert(0, row)
+    c = cells(row)
+    if is_fixture(c[0]):
+        verdict = c[1] if 'positive control' in c[1] else f'{c[1]} (positive control)'
+        row = '| ' + ' | '.join([FIXTURE, verdict] + c[2:]) + ' |'
+        rows = [r for r in rows if not is_fixture(cells(r)[0])] + [row]
+    else:
+        rows.insert(0, row)
     lines[h + 2:end] = rows
     counts = dict.fromkeys(VERDICTS, 0)
     for r in rows:
         c = cells(r)
         v = verdict_of(c[1]) if len(c) > 1 else None
-        if v and c[0] != FIXTURE:
+        if v and not is_fixture(c[0]):
             counts[v] += 1
     for i, line in enumerate(lines[:h]):
         for v in VERDICTS:

@@ -8,7 +8,7 @@
 | Verdict | Means | Count |
 |---|---|---|
 | ✅ **SAFE TO USE** | Nothing beyond what its stated purpose needs | 2 |
-| ⚠️ **USE WITH PRECAUTIONS** | Legitimate but risky; the report lists exactly what to do | 19 |
+| ⚠️ **USE WITH PRECAUTIONS** | Legitimate but risky; the report lists exactly what to do | 20 |
 | ⛔ **DO NOT USE** | Malicious, deceptive, or built to harm other people | 1 (plus the test fixture) |
 
 > [!WARNING]
@@ -31,6 +31,7 @@ links the full report (findings with evidence, what was tested, how to use it sa
 | DeusData/codebase-memory-mcp | **USE WITH PRECAUTIONS** | No phone-home. The one-line installer rewrites all agent configs, adds 7 Claude hooks and a no-login local web API. Use the plugin route or `--skip-config` | [codebase-memory-mcp-612eee2](codebase-memory-mcp-612eee2.md) |
 | DaKheera47/job-ops | **USE WITH PRECAUTIONS** | No malware. Analytics on by default, web port open to your LAN (first visitor becomes admin), secrets unencrypted. Set 6 options before use | [job-ops-7fac74f](job-ops-7fac74f.md) |
 | Panda-Lewandowski/digital_asset_inventory | **USE WITH PRECAUTIONS** | Local-only account finder with no network code. But web uploads (password CSVs included) are kept in `uploads/`, and its local web API has no login or CSRF checks. Use the CLI with a CSV that has no password column | [digital-asset-inventory-514b6c3](digital-asset-inventory-514b6c3.md) |
+| ai-job-search-dev/ai-job-search | **USE WITH PRECAUTIONS** | Security-aware Claude job-hunt workspace; no malware, hooks, telemetry or auto-submit, clean in VM. But two pre-approved tools can write files anywhere outside the repo and read any file, so an injected job posting could reach further. Default permission mode, add 4 ask rules, private fork | [ai-job-search-ab51f85](ai-job-search-ab51f85.md) |
 | phuryn/pm-skills | **SAFE TO USE** | 69 prompt-only PM skills, no hooks/MCP/tool grants, clean in VM. Skip `pm-ai-shipping` (redirects to an unaudited marketplace); installs follow `main` | [pm-skills-2a12295](pm-skills-2a12295.md) |
 | paperclipai/paperclip | **USE WITH PRECAUTIONS** | No malware found. But telemetry is on by default, Claude agents skip permission prompts by default, and the default local mode has no login. The VM run installed nothing (pnpm failed), so the verdict rests on code review. Turn those 3 defaults off and pin the version | [paperclip-d69631b](paperclip-d69631b.md) |
 | rtk-ai/rtk | **USE WITH PRECAUTIONS** | No malware, and telemetry is opt-in. But its Claude hook rewrites every Bash command Claude runs, the documented install follows "latest", and the optional LLM proxy has an admin API with no login. The VM run did not exercise it (no Rust), so the verdict rests on code review. Pin the version and skip the proxy and third-party pipelines | [rtk-e288a18](rtk-e288a18.md) |

@@ -1,6 +1,6 @@
 # Scanner vetting — 2026-11-08
 
-**BLUF.** plugin-audit uses five scanners: NVIDIA SkillSpector (primary), Cisco skill-scanner (second opinion), gitleaks, osv-scanner and semgrep. Snyk agent-scan was not vetted. The standard: each scanner's source was read at a pinned commit or release, nothing was installed or run, and it is trusted only with its network features off and a pinned, cooled-down version. Conclusion: all five are usable, SkillSpector and Cisco skill-scanner only with conditions, and neither Claude Code scanner covers Claude-specific config well enough, so our own checks must fill the gaps (see the end of this file). That is why the verdict comes from several sources: two scanners, our own checks and a manual read.
+**BLUF.** plugin-audit uses five scanners: NVIDIA SkillSpector (primary), Cisco skill-scanner (second opinion), gitleaks, osv-scanner and semgrep. Snyk agent-scan was not vetted; its main check (what MCP servers tell the AI at runtime) is done offline by our own probe instead. The standard: each scanner's source was read at a pinned commit or release, nothing was installed or run, and it is trusted only with its network features off and a pinned, cooled-down version. Conclusion: all five are usable, SkillSpector and Cisco skill-scanner only with conditions, and neither Claude Code scanner covers Claude-specific config well enough, so our own checks must fill the gaps (see the end of this file). That is why the verdict comes from several sources: two scanners, our own checks and a manual read.
 
 > **Where they run.** The vetting below was written for a Docker container with `--network none`. The pipeline
 > applies the same conditions in the Lima VM instead: scanners run as the `auditor` user, which nftables limits to
@@ -15,9 +15,9 @@
 | gitleaks | Secrets | 8.30.1, GitHub release + sha256 | VM, user `auditor`, no network | ✅ Use | Checksums only, no signature. |
 | osv-scanner | Known-vulnerable and `MAL-` dependencies | v2.7.0, binary sha256 | Offline database, no network | ✅ Use offline only | SLSA provenance attached. |
 | semgrep | Code patterns | v1.182.0 (PyPI), rules `17e31e1` | Local rules, `--metrics off`, no network | ✅ Use with local rules | No GitHub binaries (PyPI or Docker). |
-| Snyk agent-scan | — | — | — | ❌ Not vetted | Needs a Snyk token, sends tool descriptions to Snyk, runs MCP servers. |
+| Snyk agent-scan | — | — | — | ❌ Not vetted | Needs a Snyk token, sends tool descriptions to Snyk, runs MCP servers. Its main check is covered offline by our own probe (see below). |
 
-Maybe later for Snyk agent-scan, for a dynamic stage only.
+Snyk agent-scan is not needed for its main check: see [its section](#snyk-agent-scan).
 
 Archive sha256 values recorded at vetting. `vm/provision.sh` verifies each archive against them (`gh_src`) and fails the build on a mismatch ([#8](https://github.com/dl-portfolio/plugin-audit/issues/8)):
 
@@ -168,7 +168,20 @@ Verdict: ❌ not vetted.
 - It needs a Snyk token.
 - It sends tool descriptions to Snyk.
 - It runs MCP servers.
-- Maybe later, for a dynamic stage only.
+
+Its main check, reading what an MCP server actually tells the AI at runtime, is now done offline by our own code
+(2026-11-24), inside the VM with the network closed and no account:
+
+- `guest/mcp_probe.py` starts each server as a client would and records everything it sends, untruncated: tools with
+  parameter schemas and annotations, prompts and their text, resources, server `instructions`, notifications and
+  requests to the client. It lists the tools again after the calls and whenever the server announces a change.
+- `mcp_checks` in `guest/analyze_dynamic.py` flags hidden Unicode, prompt injection and tool-poisoning text
+  (`guest/textrules.py`), tools named like Claude Code's own, very long descriptions, a tool list that changes after
+  first use or is announced as changed, sampling/elicitation requests, and descriptions not found in the target's files.
+
+What this does not match: agent-scan's server-side classifier (an AI model judging each description). Our reviewer
+reads every description instead. Its pinning across scans is matched by `host/mcp_diff.py`, which diffs each manifest
+against the previous audit of the same target. Remote (`url`) MCP servers are still not contacted by either the probe or the review.
 
 ## Gaps our own checks must cover
 
@@ -202,7 +215,7 @@ Pins live in `vm/provision.sh`.
 
 **Re-vet when**
 - Any scanner version or commit changes.
-- A new scanner is added (Snyk agent-scan is currently not vetted).
+- A new scanner is added (Snyk agent-scan is currently not vetted; its main check is covered offline, see above).
 - A pinned dependency changes, such as litellm for Cisco skill-scanner.
 
 **Steps**

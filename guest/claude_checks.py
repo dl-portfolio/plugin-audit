@@ -10,6 +10,11 @@ binaries and symlinks, and an inventory of every outbound host.
 import json, os, re, stat, sys
 from collections import Counter, defaultdict
 
+# python3 -I leaves the script's own folder off sys.path; the shared rules sit next to this file (root-owned in the VM)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True   # no __pycache__ in guest/: audit.sh copies every entry of it into the VM
+from textrules import AI_TEXT_RULES, HIDDEN_UNI, hidden_severity  # noqa: E402
+
 SRC, OUT = sys.argv[1], sys.argv[2]
 MAX_FILE = 2_000_000
 findings, hosts = [], defaultdict(list)
@@ -104,17 +109,6 @@ LINE_RULES = [
     ('medium', 'claude-config', R(r'\.claude/settings(\.local)?\.json|\.claude\.json|CLAUDE\.md|\.claude/(skills|commands|agents|hooks)'), 'writes or reads Claude Code config', 'code'),
 ]
 
-AI_TEXT_RULES = [
-    ('high', 'prompt-injection', R(r'ignore (all |any )?(previous|prior|above|earlier) (instructions|rules|prompts)'), 'instruction override'),
-    ('high', 'prompt-injection', R(r"(do not|don't|never) (tell|inform|mention|show|reveal|alert)[^\n]{0,30}(the )?user"), 'asks the AI to hide something from the user'),
-    ('high', 'prompt-injection', R(r'without (asking|prompting|confirmation|telling)'), 'asks the AI to act without confirmation'),
-    ('high', 'prompt-injection', R(r'(this|the) (skill|plugin|repo|repository|code|tool|package) (is|has been) (safe|verified|audited|trusted|approved)'), 'self-declared safety (aimed at reviewers)'),
-    ('high', 'prompt-injection', R(r'(security )?(reviewer|auditor|scanner|ai model|language model|assistant)s?[,:]? (should|must|please)'), 'text addressed to an AI reviewer'),
-    ('medium', 'prompt-injection', R(r'you are now|new instructions|system prompt|<\s*/?\s*(system|instructions?)\s*>'), 'role/system-prompt manipulation'),
-]
-# Invisible or text-hiding characters: ANSI escape (ESC starts terminal sequences that hide or overwrite text),
-# Unicode tags, bidi controls, zero-width characters. Keep in sync with HIDDEN_UNI in mcp_probe.py.
-HIDDEN_UNI = re.compile('[\x1b\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\u180E]')
 URL_RE = re.compile(r'(?:https?|wss?)://([A-Za-z0-9.-]+\.[A-Za-z]{2,}|\d{1,3}(?:\.\d{1,3}){3})(?::\d+)?')
 B64_RE = re.compile(r'[A-Za-z0-9+/]{400,}={0,2}')
 BORING_HOSTS = re.compile(r'(^|\.)(example\.(com|org|net)|localhost|w3\.org|schema\.org|json-schema\.org|opensource\.org|apache\.org|mozilla\.org|shields\.io|img\.shields\.io)$')
@@ -373,8 +367,7 @@ for root, dirs, files in os.walk(SRC, followlinks=False):
         check_special(path, full, name, text)
         worst = None   # one finding per file: its most severe hidden character (first one of that severity)
         for m in HIDDEN_UNI.finditer(text):
-            o = ord(m.group())
-            sev = 'critical' if 0xE0000 <= o <= 0xE007F else ('high' if 0x202A <= o <= 0x2069 or o == 0x1B else 'medium')
+            sev = hidden_severity(m.group())
             if worst is None or order_of(sev) < order_of(worst[0]):
                 worst = (sev, m)
                 if sev == 'critical':

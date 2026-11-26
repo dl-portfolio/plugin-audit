@@ -11,19 +11,27 @@ and again whenever the server sends notifications/{tools,prompts,resources}/list
 tools mid-session is recorded with a diff. analyze_dynamic.py summarises the saved manifests; host/mcp_diff.py diffs
 them against the previous audit of the same target.
 
+Besides the manifest, the record keeps the rest of the text the user's AI would be given, untruncated: the server's
+`instructions`, each prompt's text (prompts/get), resource templates, tool-call replies, and requests the server sent
+to the client (sampling, elicitation). analyze_dynamic.py runs its text checks over all of it. The record is saved
+even when the probe is stopped by `timeout` (SIGTERM) or the server never answers (then "complete": false).
+
 This file is also the library both of them use (canonical_manifest, digest, diff_manifests, describe_diff, safe,
 load_records): they load it by path, because python3 -I does not put the script's folder on sys.path.
 """
-import hashlib, json, os, re, select, stat, subprocess, sys, time
+import hashlib, json, os, re, select, signal, stat, subprocess, sys, time
+
+# python3 -I leaves this file's folder off sys.path; textrules.py sits next to it (root-owned in the VM)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True   # no __pycache__ in guest/: audit.sh copies every entry of it into the VM
+from textrules import HIDDEN_UNI  # noqa: E402  ANSI escape, Unicode tags, bidi controls, zero-width characters
 
 KINDS = (('tools', 'name'), ('prompts', 'name'), ('resources', 'uri'))
 SCHEMA = 'plugin-audit/mcp-manifest'
 SCHEMA_VERSION = 1
 MAX_PAGES = 20               # nextCursor pages per list
 MAX_RECORD_BYTES = 8_000_000  # readers ignore bigger files (the target wrote them)
-# Same character set as HIDDEN_UNI in claude_checks.py (tests/test_mcp_manifest.py keeps them equal): ANSI escape,
-# Unicode tags, bidi controls, zero-width characters. In a tool description they hide text from a human reader.
-HIDDEN_UNI = re.compile('[\x1b\U000E0000-\U000E007F\u202A-\u202E\u2066-\u2069\u200B-\u200D\u2060\u180E]')
+MAX_REPLY_CHARS = 200_000     # one tool-call reply or server request kept in the record
 
 
 # ---------------- library ----------------
@@ -93,6 +101,12 @@ def safe(s, n=300):
         s = json.dumps(s, sort_keys=True, ensure_ascii=False)
     s = ''.join(c if c.isprintable() and not HIDDEN_UNI.match(c) else f'\\u{ord(c):04x}' for c in s)
     return s if len(s) <= n else s[:n] + '...'
+
+
+def keep(obj, n=MAX_REPLY_CHARS):
+    """obj as-is for the record, or its JSON text cut to n characters when it is bigger."""
+    s = json.dumps(obj, ensure_ascii=False)
+    return obj if len(s) <= n else {'truncated': s[:n]}
 
 
 def describe_diff(diff, indent='    '):
@@ -184,6 +198,9 @@ class Probe:
         self.step = 'initialize'
         self.pending = set()   # kinds the server said changed (list_changed), not yet re-listed
         self.notices = []      # every list_changed notification: {'method', 'during'}
+        self.server_requests = []   # requests the server sent us (sampling, elicitation, roots...), kept for the record
+        self.non_json = []          # stdout lines that are not JSON-RPC (first 50)
+        self.errors = []            # requests with no reply or an error reply
 
     def send(self, obj):
         try:
@@ -196,7 +213,10 @@ class Probe:
         i = self.next_id
         self.next_id += 1
         self.send({'jsonrpc': '2.0', 'id': i, 'method': method, 'params': params})
-        return self.recv(i, max(self.deadline, time.time() + grace))
+        r = self.recv(i, max(self.deadline, time.time() + grace))
+        if r is None or 'error' in r:
+            self.errors.append(f'{method}: ' + ('no reply' if r is None else json.dumps(r.get('error'))[:300]))
+        return r
 
     def recv(self, want_id, deadline):
         while time.time() < deadline:
@@ -205,7 +225,10 @@ class Probe:
                 try:
                     msg = json.loads(line)
                 except ValueError:
-                    print('[non-json stdout]', safe(line.decode('utf-8', 'replace'), 200))
+                    text = line.decode('utf-8', 'replace')
+                    if text.strip() and len(self.non_json) < 50:
+                        self.non_json.append(text[:2000])
+                    print('[non-json stdout]', safe(text, 200))
                     continue
                 if not isinstance(msg, dict):
                     continue
@@ -216,6 +239,8 @@ class Probe:
                     self.pending.add(method.split('/')[1])
                     self.notices.append({'method': method, 'during': self.step})
                 elif 'id' in msg and isinstance(method, str):   # a request from the server: answer so it does not hang
+                    if len(self.server_requests) < 100:
+                        self.server_requests.append(keep(msg))
                     self.send({'jsonrpc': '2.0', 'id': msg['id'], 'result': {}} if method == 'ping' else
                               {'jsonrpc': '2.0', 'id': msg['id'], 'error': {'code': -32601, 'message': 'not supported by the audit probe'}})
                 print('[server message]', safe(json.dumps(msg), 300))
@@ -229,10 +254,11 @@ class Probe:
                 self.buf += chunk
         return None
 
-    def list_kind(self, kind, grace=0):
+    def list_kind(self, kind, grace=0, method=None):
+        """All pages of one list; `kind` is the result field (method defaults to <kind>/list). None = no answer."""
         items, cursor = [], None
         for _ in range(MAX_PAGES):
-            r = self.request(f'{kind}/list', {'cursor': cursor} if cursor else {}, grace)
+            r = self.request(method or f'{kind}/list', {'cursor': cursor} if cursor else {}, grace)
             res = (r or {}).get('result')
             page = res.get(kind) if isinstance(res, dict) else None
             if not isinstance(page, list):
@@ -289,14 +315,29 @@ def main(argv):
     call, tmo = '--call' in opts, int(opt('--timeout', 60))
     out_dir = opt('--out') or os.environ.get('AUDIT_MCP_DIR')
     key = server_key(opt('--name'), cmd)
-    pr = Probe(cmd, tmo)
+    empty = canonical_manifest(None)
+    record = {'schema': SCHEMA, 'schema_version': SCHEMA_VERSION, 'server_key': key, 'command': cmd, 'complete': False,
+              'server_info': None, 'protocol_version': None, 'capabilities': None, 'instructions': None,
+              'manifest': empty, 'sha256': digest(empty), 'relists': [], 'list_changed': [],
+              'final_sha256': digest(empty), 'swapped_mid_session': False, 'prompt_texts': {},
+              'resource_templates': None, 'calls': [], 'server_requests': [], 'non_json_stdout': [], 'errors': []}
+    # `timeout` around the probe sends SIGTERM: unwind through `finally` so what was seen so far is still saved
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(124))
+    pr = None
     try:
+        pr = Probe(cmd, tmo)
+        record.update(list_changed=pr.notices, server_requests=pr.server_requests, non_json_stdout=pr.non_json,
+                      errors=pr.errors)
         init = pr.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {},
                                          'clientInfo': {'name': 'audit-probe', 'version': '1'}})
         print('INITIALIZE:', safe(json.dumps(init), 1500))
         if not init:
             return 1
         pr.send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        result = (init.get('result') if isinstance(init.get('result'), dict) else {}) or {}
+        caps = result.get('capabilities') if isinstance(result.get('capabilities'), dict) else {}
+        record.update(server_info=result.get('serverInfo'), protocol_version=result.get('protocolVersion'),
+                      capabilities=result.get('capabilities'), instructions=result.get('instructions'))
         pr.step = 'first listing'
         first = pr.list_all()
         for kind, _ in KINDS:
@@ -305,11 +346,7 @@ def main(argv):
             for it in items or []:
                 it = it if isinstance(it, dict) else {}
                 print('  -', safe(it.get('name') or it.get('uri'), 120), '|', safe(it.get('description') or '', 600))
-        result = (init.get('result') if isinstance(init.get('result'), dict) else {}) or {}
-        record = {'schema': SCHEMA, 'schema_version': SCHEMA_VERSION, 'server_key': key, 'command': cmd,
-                  'server_info': result.get('serverInfo'), 'protocol_version': result.get('protocolVersion'),
-                  'capabilities': result.get('capabilities'), 'manifest': canonical_manifest(first),
-                  'sha256': digest(first), 'relists': [], 'list_changed': pr.notices}
+        record.update(manifest=canonical_manifest(first), sha256=digest(first), final_sha256=digest(first))
         print(f'MANIFEST {key}: sha256 {record["sha256"]}')
         current = first
 
@@ -328,6 +365,17 @@ def main(argv):
 
         if pr.pending:
             relist('list_changed during the first listing')
+        # the rest of the text a client shows its AI: prompt bodies and resource templates
+        pr.step = 'prompts/get'
+        for p in [p for p in first['prompts'] or [] if isinstance(p, dict) and isinstance(p.get('name'), str)][:25]:
+            args = {a['name']: 'test' for a in p.get('arguments') or [] if isinstance(a, dict) and isinstance(a.get('name'), str)}
+            r = pr.request('prompts/get', {'name': p['name'], 'arguments': args})
+            record['prompt_texts'][p['name']] = keep((r or {}).get('result'))
+        if 'resources' in caps:
+            pr.step = 'resource templates'
+            record['resource_templates'] = pr.list_kind('resourceTemplates', method='resources/templates/list')
+        if pr.pending:
+            relist('list_changed during prompts/get')
         if call:
             tools = [t for t in first['tools'] or [] if isinstance(t, dict) and isinstance(t.get('name'), str)]
             for t in tools[:25]:
@@ -339,6 +387,7 @@ def main(argv):
                     dummy[k] = DUMMY.get(ty, 'test') if isinstance(ty, str) else 'test'
                 pr.step = f'call {t["name"]}'
                 r = pr.request('tools/call', {'name': t['name'], 'arguments': dummy})
+                record['calls'].append({'name': t['name'], 'arguments': dummy, 'reply': keep(r)})
                 print(f'CALL {safe(t["name"], 80)}({safe(json.dumps(dummy), 120)}) ->', safe(json.dumps(r), 400) if r else 'no reply')
                 if pr.pending:
                     relist(f'list_changed during {pr.step}')
@@ -346,13 +395,16 @@ def main(argv):
         relist('after the tool calls' if call else 'end of session', grace=15)
         record['final_sha256'] = digest(current)
         record['swapped_mid_session'] = any(r['changed'] for r in record['relists'])
+        record['complete'] = True
+        print(f'SERVER REQUESTS: {len(pr.server_requests)}  ERRORS: {len(pr.errors)}')
+        return 0
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if pr:
+            pr.close()
         if out_dir:
             path = save(out_dir, key, record)
             print(f'MANIFEST saved: {path}' if path else f'MANIFEST not saved: {out_dir} has too many {key}*.json')
-        return 0
-    finally:
-        pr.close()
-
 
 if __name__ == '__main__':
     sys.exit(main(sys.argv[1:]))

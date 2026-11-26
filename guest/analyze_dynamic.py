@@ -4,8 +4,15 @@
 python3 -I analyze_dynamic.py snapshot <out.json>   # persistence-relevant file state
 python3 -I analyze_dynamic.py analyze <dynamic_out_dir>  # writes dynamic.json, prints summary
 """
-import hashlib, importlib.util, json, os, re, sys
+import hashlib, json, os, re, sys
 from collections import Counter
+
+# python3 -I leaves the script's own folder off sys.path; mcp_probe.py and textrules.py sit next to this file
+# (root-owned in the VM)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.dont_write_bytecode = True   # no __pycache__ in guest/: audit.sh copies every entry of it into the VM
+import mcp_probe as mcp  # noqa: E402
+from textrules import AI_TEXT_RULES, MCP_TEXT_RULES, HIDDEN_UNI, hidden_severity  # noqa: E402
 
 HOME = '/home/sandbox'
 MACHOME = '/Users/sandbox'   # run-darwin phase
@@ -174,24 +181,170 @@ def fw_drops(path):
     return d
 
 
-def probe_lib():
-    """mcp_probe.py (same folder) as a library: python3 -I does not put this folder on sys.path."""
-    sys.dont_write_bytecode = True
-    spec = importlib.util.spec_from_file_location('mcp_probe', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mcp_probe.py'))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+# ---------- MCP servers as they ran (records written by mcp_probe.py) ----------
+PROBE_RE = re.compile(r'^\S*python3[\d.]* -I /opt/audit/bin/mcp_probe\.py( |$)')
+CLAUDE_TOOLS = {'bash', 'read', 'write', 'edit', 'multiedit', 'glob', 'grep', 'ls', 'webfetch', 'websearch', 'task',
+                'agent', 'todowrite', 'notebookedit', 'notebookread', 'skill', 'killshell', 'bashoutput'}
+SEV_ORDER = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3, 'info': 4}
+SERVER_REQUESTS = {'sampling/createMessage': ('medium', "asks the client's AI model to generate text (sampling)"),
+                   'elicitation/create': ('medium', 'asks the user for input through the client'),
+                   'roots/list': ('low', 'asks which folders the client has open')}
+SRC_EXT = ('.js', '.mjs', '.cjs', '.ts', '.py', '.go', '.json', '.md', '.txt', '.yaml', '.yml', '.toml', '.rs', '.rb')
+SRC_ROOTS = (WORK, HOME + '/.npm/_npx', '/audit/src')   # where a server's text would sit if it is not built at runtime
 
 
-def mcp_section(o, out):
+def strings(obj, where=''):
+    """Every string inside a JSON value, with a short path to where it sits."""
+    if isinstance(obj, str):
+        yield where, obj
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            yield from strings(k, f'{where}.<key>') if isinstance(k, str) and len(k) > 40 else ()
+            yield from strings(v, f'{where}.{k}')
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            n = v.get('name') if isinstance(v, dict) and isinstance(v.get('name'), str) else i
+            yield from strings(v, f'{where}[{n}]')
+
+
+def found_in_files(needles, roots, budget=300_000_000):
+    """Which needles appear literally in the target's files (its source, installed packages, npx cache)."""
+    left, used = set(needles), 0
+    for r in roots:
+        for root, dirs, files in os.walk(r):
+            dirs[:] = [d for d in dirs if d not in ('.git', '__pycache__')]
+            for n in files:
+                if not left or used > budget:
+                    return set(needles) - left
+                if not n.endswith(SRC_EXT):
+                    continue
+                p = os.path.join(root, n)
+                try:
+                    if os.path.islink(p) or os.path.getsize(p) > 2_000_000:
+                        continue
+                    with open(p, encoding='utf-8', errors='replace') as f:
+                        t = f.read()
+                except OSError:
+                    continue
+                used += len(t)
+                left -= {x for x in left if x in t}
+    return set(needles) - left
+
+
+def mcp_checks(o, recs, phases, src_roots):
+    """Flags for what the MCP servers told the client: text rules over everything they sent (tools and their
+    parameter schemas, prompts, resources, later listings, instructions, prompt bodies, resource templates, tool-call
+    replies, requests to the client), Claude tool names, very long descriptions, descriptions not found in the
+    target's files, and a record-count check against the probe runs strace saw (the server runs as the same user as
+    the probe and could add or delete records). Hidden characters in the manifests and mid-session changes are
+    reported by mcp_section itself."""
+    flags = []
+
+    def flag(sev, check, ph, key, where, snippet, detail):
+        flags.append({'severity': sev, 'check': check, 'phase': ph, 'server': mcp.safe(key, 64),
+                      'where': mcp.safe(where, 160), 'detail': detail, 'snippet': mcp.safe(snippet or '', 240)})
+
+    mdir = os.path.join(o, 'mcp')
+    try:
+        on_disk = sorted(d for d in os.listdir(mdir) if not os.path.islink(os.path.join(mdir, d)))
+    except OSError:
+        on_disk = []
+    for ph in sorted(set(on_disk) | {p for p, r in phases.items() if r.get('mcp_probe_runs')}):
+        try:
+            files = [f for f in os.listdir(os.path.join(mdir, ph)) if f.endswith('.json')]
+        except OSError:
+            files = []
+        valid = len(recs.get(ph, {}))
+        if len(files) > valid:
+            flag('medium', 'mcp-record', ph, '?', f'mcp/{ph}/', f'{len(files) - valid} of {len(files)} files',
+                 'probe record failed its schema or sha256 check (damaged, or edited after the probe wrote it): ignored')
+        if ph not in phases:
+            continue   # no strace for this phase: nothing to compare with
+        runs = phases[ph].get('mcp_probe_runs', 0)
+        if len(files) > runs:
+            flag('high', 'mcp-record', ph, '?', f'mcp/{ph}/', f'{len(files)} records, {runs} probe runs',
+                 'more probe records than probe runs: something else wrote into the probe folder')
+        elif runs > len(files):
+            flag('low', 'mcp-record', ph, '?', f'mcp/{ph}/', f'{len(files)} records, {runs} probe runs',
+                 'a probe run left no record (killed with SIGKILL, or the record was deleted)')
+
+    descs = {}
+    for ph, servers in recs.items():
+        for key, r in servers.items():
+            calls = r.get('calls') if isinstance(r.get('calls'), list) else []
+            parts = {'manifest': r['manifest'], 'instructions': r.get('instructions'),
+                     'prompt_texts': r.get('prompt_texts'), 'resource_templates': r.get('resource_templates'),
+                     'calls': [c.get('reply') for c in calls if isinstance(c, dict)],
+                     'server_requests': r.get('server_requests')}
+            for i, rl in enumerate(r.get('relists') if isinstance(r.get('relists'), list) else []):
+                if isinstance(rl, dict) and isinstance(rl.get('manifest'), dict):
+                    parts[f'relists[{i}]'] = rl['manifest']
+            for part, val in parts.items():
+                for where, s in strings(val, part):
+                    m = HIDDEN_UNI.search(s)
+                    if m and part != 'manifest' and not part.startswith('relists'):
+                        flag(hidden_severity(m.group()), 'hidden-unicode', ph, key, where, s,
+                             f'hidden/escape character U+{ord(m.group()):04X} in text the AI reads')
+                    for sev, cat, rx, detail in AI_TEXT_RULES + MCP_TEXT_RULES:
+                        mm = rx.search(s)
+                        if mm:
+                            flag(sev, cat, ph, key, where, s[max(0, mm.start() - 60):mm.end() + 60], detail)
+            tools = r['manifest'].get('tools')
+            for t in tools if isinstance(tools, list) else []:
+                if not isinstance(t, dict):
+                    continue
+                name, desc = str(t.get('name') or ''), t.get('description') if isinstance(t.get('description'), str) else ''
+                if name.lower() in CLAUDE_TOOLS:
+                    flag('low', 'mcp-shadowing', ph, key, f'tools[{name}]', name,
+                         "tool has the same name as one of Claude Code's own tools")
+                if len(desc) > 2000:
+                    flag('medium', 'mcp-long-description', ph, key, f'tools[{name}].description', desc[:200],
+                         f'very long tool description ({len(desc)} chars): room to hide instructions')
+                line = desc.strip().split('\n')[0].strip()[:60]
+                if len(line) >= 30:
+                    descs.setdefault(line, (ph, key, name))
+            ins = r.get('instructions')
+            if isinstance(ins, str) and ins.strip():
+                flag('info', 'mcp-instructions', ph, key, 'instructions', ins,
+                     'server sends instructions that clients add to the AI context')
+            for q in r.get('server_requests') if isinstance(r.get('server_requests'), list) else []:
+                meth = q.get('method') if isinstance(q, dict) else None
+                sev, detail = SERVER_REQUESTS.get(meth, ('info', f'server sent a request to the client: {mcp.safe(meth, 60)}'))
+                flag(sev, 'mcp-server-request', ph, key, 'server_requests', json.dumps(q), detail)
+            nj = r.get('non_json_stdout')
+            if isinstance(nj, list) and nj:
+                flag('low', 'mcp-protocol', ph, key, 'stdout', str(nj[0]), 'server prints non-protocol text on stdout')
+            if not r.get('complete'):
+                errs = r.get('errors') if isinstance(r.get('errors'), list) else []
+                flag('low', 'mcp-incomplete', ph, key, 'record', '; '.join(map(str, errs[:3])),
+                     'probe stopped before the end (timeout or no reply): later listings and tool calls are missing')
+    # descriptions that appear nowhere in the target's files were built at runtime (or come from compiled code)
+    if descs:
+        seen = found_in_files(list(descs), [x for x in src_roots if os.path.isdir(x)])
+        for line, (ph, key, name) in descs.items():
+            if line not in seen:
+                flag('info', 'mcp-runtime-text', ph, key, f'tools[{name}].description', line,
+                     'description text not found in the target files: built at runtime, or from compiled/minified code')
+    uniq, keys = [], set()
+    for f in sorted(flags, key=lambda f: SEV_ORDER.get(f['severity'], 9)):
+        k = (f['check'], f['phase'], f['server'], f['where'], f['detail'])
+        if k not in keys:
+            keys.add(k)
+            uniq.append(f)
+    return uniq[:300]
+
+
+def mcp_section(o, out, src_roots=SRC_ROOTS):
     """What every probed MCP server advertised (manifest sha256), whether it changed mid-session, hidden characters
-    in its tool text, and whether the run and run-darwin phases saw the same manifest."""
-    lib = probe_lib()
+    in its tool text, whether the run and run-darwin phases saw the same manifest, and mcp_checks' flags."""
+    lib = mcp
     recs = lib.load_records(os.path.join(o, 'mcp'))
+    flags = mcp_checks(o, recs, out['phases'], src_roots)
+    out['mcp_flags'] = flags
     lines = []
-    if not recs:
+    if not recs and not flags:
         return lines
-    lines.append('== MCP MANIFESTS (what each probed server advertised; canonical JSON + sha256 in dynamic/mcp/<phase>/)')
+    lines.append('== MCP MANIFESTS (what each probed server advertised; full records in dynamic/mcp/<phase>/)')
     summary = {}
     for ph, servers in recs.items():
         for key, r in servers.items():
@@ -214,7 +367,9 @@ def mcp_section(o, out):
                     announced = 'announced by list_changed' if 'list_changed' in str(rl.get('reason')) else 'NOT announced'
                     lines.append(f'    !! MID-SESSION CHANGE ({lib.safe(rl.get("reason"), 80)}; {announced}): sha256 {lib.safe(rl.get("sha256"), 64)}')
                     lines += lib.describe_diff(d, '      ')
-            if not swaps:
+            if not r.get('complete'):
+                lines.append('    !! probe stopped early (timeout or no reply): later listings and tool calls are missing')
+            elif not swaps:
                 lines.append('    re-listed after the session: unchanged')
             hidden = lib.hidden_chars(m)
             for rl in swaps:
@@ -230,6 +385,12 @@ def mcp_section(o, out):
             if lib.is_change(d):
                 lines.append(f'  !! {lib.safe(key, 64)}: run-darwin saw a DIFFERENT manifest than run (OS-dependent tools):')
                 lines += lib.describe_diff(d, '    ')
+    lines.append(f'  checks on all text the servers sent: {len(flags)} flag(s)')
+    for f in flags[:40]:
+        lines.append(f"  {'!!' if f['severity'] in ('critical', 'high') else '  '} {f['severity']} {f['check']} "
+                     f"[{f['phase']}] {f['server']} {f['where']}: {f['detail']}")
+        if f['snippet']:
+            lines.append(f'       "{f["snippet"][:200]}"')
     out['mcp_manifests'] = summary
     return lines
 
@@ -311,6 +472,7 @@ def analyze(o):
             'deletes_outside_project': deletes[:40],
             'leftover_processes': leftover[:20],
             'macos_tool_calls': sorted({cmd for pid, exe, cmd in st['execs'] if exe in mac_stubs})[:60],
+            'mcp_probe_runs': sum(1 for pid, exe, cmd in st['execs'] if PROBE_RE.search(cmd)),
         }
         out['phases'][ph] = r
     # persistence diff

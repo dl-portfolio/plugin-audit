@@ -1,7 +1,8 @@
 # No VM here: the full pipeline needs a Lima VM on an Apple-silicon Mac, so the
 # positive-control audit (./audit tests/fixture-malicious) is run locally after
 # every pipeline change. CI runs the static parts: linters, a secret scan, and the
-# guest's own static checks and baseline scenario against the fixture (as data).
+# guest's own static checks and baseline scenario against the fixture (as data),
+# and VM-free unit tests, which also run the fixture's harmless stdio MCP server.
 #
 # Same supply-chain rules as the tool itself: actions pinned to a commit SHA,
 # every download pinned to a version and checked against a sha256 (ruff via
@@ -39,6 +40,15 @@ jobs:
 
       - name: javascript syntax
         run: for f in guest/*.js tests/fixture-malicious/*.js; do node --check "$f"; done
+
+      # the hidden-character rules (guest/textrules.py) and the tests must write these characters as \u / \x escapes,
+      # never as the characters themselves
+      - name: no invisible, bidi or escape characters in our own files
+        run: |
+          if LC_ALL=C.UTF-8 grep -rnP '[\x{1B}\x{200B}-\x{200D}\x{202A}-\x{202E}\x{2060}\x{2066}-\x{2069}\x{180E}\x{E0000}-\x{E007F}]' \
+               audit audit.sh guest host tests vm .claude .github; then
+            echo "invisible characters found (write them as escapes)"; exit 1
+          fi
 
   selftest:
     runs-on: ubuntu-24.04

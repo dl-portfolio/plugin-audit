@@ -349,7 +349,7 @@ The **ID** is `<name>-<first 7 chars of the commit>`. A verdict is valid for tha
 | `scenario/install.sh`, `run.sh`, `notes.txt` | Tailored or hand-written scenario (runs after the baseline) |
 | `report.md`, `index-row.md`, `report.json` | Reviewer output before `host/publish_report.py` checks it and writes `reports/<id>.md`, `.json` and `.sarif` |
 | `dynamic/dynamic-summary.txt` | What happened at runtime, per phase; logs alongside |
-| `dynamic/mcp/<phase>/<server>.json` | Each probed MCP server's manifest (tools, prompts, resources) as canonical JSON with its sha256, re-listings and `list_changed` notices; `dynamic/mcp-diff.json` diffs it against the previous audit of the same target |
+| `dynamic/mcp/<phase>/<server>.json` | Each probed MCP server's manifest (tools, prompts, resources) as canonical JSON with its sha256, re-listings and `list_changed` notices, plus everything else it sent, untruncated (instructions, prompt bodies, tool-call replies, requests to the client; saved even if the probe is stopped); `dynamic/mcp-diff.json` diffs it against the previous audit of the same target |
 | `mcp-previous/` | The manifests of the previous `audit.sh run` of this audit (baseline for the diff) |
 
 To change the scenario: edit `work/<id>/scenario/*.sh`, then `./audit.sh run <id>` (after `./audit.sh new`, which keeps
@@ -370,13 +370,15 @@ the VM; `./audit` deletes it at the end).
 | Tool or scanner version | `dl` / `gh_src` in `vm/provision.sh`; record vetting in `scanner-vetting.md` | Yes |
 | Scenario coverage | `guest/auto_scenario.py` (baseline) or the scenario prompt in `audit` | No |
 | MCP probe, manifest format and diff | `guest/mcp_probe.py` (also the library `analyze_dynamic.py` and `host/mcp_diff.py` load), `host/mcp_diff.py` | No |
+| Text rules (prompt injection, MCP tool poisoning, hidden characters) | `guest/textrules.py` (static and runtime checks share it); runtime MCP text checks in `mcp_checks` in `guest/analyze_dynamic.py` | No |
 | Runtime phase | `phase` in `guest/dynamic.sh`, mode in `guest/netmode.sh`, phase list in `guest/analyze_dynamic.py` | No |
 | Report format, verdict rubric | `.claude/skills/audit/SKILL.md` | No |
 | Verdict JSON fields, SARIF mapping | `docs/verdict-schema.md` and the checks in `host/publish_report.py` (new field = new `schema_version`) | No |
 | README graphics | `docs/assets/generate.py`, then run it | No |
 
 After any change, run `./audit tests/fixture-malicious`: ⛔ DO NOT USE, with decoy reads, refused exfil hosts,
-`.bashrc` persistence, a leftover process, direct egress and the `macOS SPOOF` section all present. CI runs only the
+`.bashrc` persistence, a leftover process, direct egress, the `macOS SPOOF` section and, in `== MCP MANIFESTS`, the
+tool-poisoning flags and the mid-session change all present. CI runs only the
 VM-free part: `python3 -I tests/static_selftest.py` (our static checks and the baseline scenario must flag the fixture)
 and the unit tests (`for t in tests/test_*.py; do python3 -I "$t"; done`).
 
@@ -412,12 +414,13 @@ and the unit tests (`for t in tests/test_*.py; do python3 -I "$t"; done`).
 | `guest/static.sh`, `claude_checks.py`, `summarize_static.py` | Static scan | VM (`auditor`) |
 | `guest/auto_scenario.py` | Baseline scenario | VM (`auditor`) |
 | `guest/dynamic.sh`, `netmode.sh`, `analyze_dynamic.py` | Runtime phases, network modes, summary | VM (root; target as `sandbox`) |
-| `guest/mcp_probe.py`, `fire_hooks.py` | Exercise MCP servers (saving each manifest with its sha256) and Claude hooks | VM (`sandbox`) |
+| `guest/mcp_probe.py`, `fire_hooks.py` | Exercise MCP servers (saving each manifest with its sha256, plus everything else it sent: instructions, prompt bodies, tool-call replies, requests to the client) and Claude hooks | VM (`sandbox`) |
+| `guest/textrules.py` | Prompt-injection, MCP tool-poisoning and hidden-character rules shared by the static and runtime checks | VM |
 | `host/mcp_diff.py` | Diffs MCP manifests against the previous audit of the same target; appended to the runtime summary | Host |
 | `guest/darwin_preload.js`, `darwin_sitecustomize.py`, `macstub.sh` | macOS impersonation | VM (`sandbox`) |
 | `.claude/skills/audit/SKILL.md` | `/audit` skill: steps, rules, rubric, report template | Claude Code |
 | `.claude/agents/audit-reviewer.md` | `/audit` review subagent, limited to Read, Grep and Glob | Claude Code |
-| `tests/fixture-malicious/` | Positive control | VM only |
+| `tests/fixture-malicious/` | Positive control (its `mcp-server.js` is harmless and also runs in CI, `tests/test_mcp_text_checks.py`) | VM; MCP server also CI |
 | `tests/test_*.py` | VM-free unit tests (run in CI) | Host / CI |
 | `scanner-vetting.md` | Why each scanner is trusted | Docs |
 | `reports/` | Reports and index (tool output) | Docs |

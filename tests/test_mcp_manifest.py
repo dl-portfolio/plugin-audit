@@ -228,13 +228,19 @@ class Summaries(unittest.TestCase):
 
 
 class HiddenUnicode(unittest.TestCase):
-    def test_patterns_in_sync(self):
-        with open(os.path.join(GUEST, 'claude_checks.py'), encoding='utf-8') as f:
-            tree = ast.parse(f.read())
-        pat = next(n.value.args[0].value for n in ast.walk(tree) if isinstance(n, ast.Assign)
-                   and getattr(n.targets[0], 'id', '') == 'HIDDEN_UNI')
-        self.assertEqual(pat, lib.HIDDEN_UNI.pattern)
-        self.assertIn('\x1b', pat)
+    def test_one_pattern(self):
+        # claude_checks.py, mcp_probe.py and analyze_dynamic.py all take HIDDEN_UNI from textrules.py
+        textrules = load(os.path.join(GUEST, 'textrules.py'), 'textrules')
+        self.assertEqual(lib.HIDDEN_UNI.pattern, textrules.HIDDEN_UNI.pattern)
+        self.assertIn('\x1b', textrules.HIDDEN_UNI.pattern)
+        for script in ('claude_checks.py', 'analyze_dynamic.py'):
+            with open(os.path.join(GUEST, script), encoding='utf-8') as f:
+                tree = ast.parse(f.read())
+            imported = {a.name for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == 'textrules'
+                        for a in n.names}
+            defined = {getattr(t, 'id', '') for n in ast.walk(tree) if isinstance(n, ast.Assign) for t in n.targets}
+            self.assertIn('HIDDEN_UNI', imported, script)
+            self.assertNotIn('HIDDEN_UNI', defined, script)
 
     def test_claude_checks_flags_ansi_escape(self):
         with tempfile.TemporaryDirectory() as tmp:
